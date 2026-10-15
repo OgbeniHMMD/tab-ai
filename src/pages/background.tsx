@@ -77,8 +77,19 @@ function maskToCanvas(mask: any): HTMLCanvasElement {
   return canvas;
 }
 
+type CutoutControls = {
+  /** Foreground opacity, in percent. 100 = full removal, 0 = untouched. */
+  intensity: number;
+  /** Edge feather as a percentage of the longest edge. */
+  feather: number;
+  /** Edge hardness. Pushes soft alpha towards fully opaque/transparent. */
+  contrast: number;
+};
+
+const DEFAULT_CONTROLS: CutoutControls = { intensity: 100, feather: 0, contrast: 0 };
+
 /** Apply a grayscale mask to the original image as its alpha channel. */
-function compositeCutout(source: HTMLImageElement, mask: HTMLCanvasElement): HTMLCanvasElement {
+function compositeCutout(source: HTMLImageElement, mask: HTMLCanvasElement, controls: CutoutControls): HTMLCanvasElement {
   const width = source.naturalWidth;
   const height = source.naturalHeight;
 
@@ -88,21 +99,72 @@ function compositeCutout(source: HTMLImageElement, mask: HTMLCanvasElement): HTM
   const outCtx = out.getContext("2d", { willReadFrequently: true })!;
   outCtx.drawImage(source, 0, 0, width, height);
 
+  // Upscale the mask to the source resolution, optionally feathering the edge.
   const scaled = document.createElement("canvas");
   scaled.width = width;
   scaled.height = height;
   const scaledCtx = scaled.getContext("2d", { willReadFrequently: true })!;
   scaledCtx.imageSmoothingEnabled = true;
   scaledCtx.imageSmoothingQuality = "high";
+  if (controls.feather > 0) {
+    const radius = (controls.feather / 100) * Math.max(width, height) * 0.02;
+    scaledCtx.filter = `blur(${radius.toFixed(2)}px)`;
+  }
   scaledCtx.drawImage(mask, 0, 0, width, height);
+  scaledCtx.filter = "none";
 
   const pixels = outCtx.getImageData(0, 0, width, height);
   const maskPixels = scaledCtx.getImageData(0, 0, width, height);
+
+  const gain = controls.intensity / 100;
+  const contrast = 1 + (controls.contrast / 100) * 3; // 1 -> 4
+
   for (let i = 0; i < pixels.data.length; i += 4) {
-    pixels.data[i + 3] = (maskPixels.data[i] + maskPixels.data[i + 1] + maskPixels.data[i + 2]) / 3;
+    let a = (maskPixels.data[i] + maskPixels.data[i + 1] + maskPixels.data[i + 2]) / (3 * 255);
+    if (contrast !== 1) a = (a - 0.5) * contrast + 0.5;
+    a *= gain;
+    pixels.data[i + 3] = a <= 0 ? 0 : a >= 1 ? 255 : Math.round(a * 255);
   }
   outCtx.putImageData(pixels, 0, 0);
   return out;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Controls                                                                  */
+/* -------------------------------------------------------------------------- */
+
+function Slider({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 100,
+  step = 1,
+  suffix = "",
+  hint,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+  hint?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[12px] font-[550] tracking-[-0.01em]">{label}</span>
+        <span className="mono text-[11px] tabular-nums text-[var(--text-muted)]">
+          {value}
+          {suffix}
+        </span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} className="w-full cursor-pointer accent-[var(--text)]" />
+      {hint ? <span className="mono text-[10px] leading-4 text-[var(--text-faint)]">{hint}</span> : null}
+    </label>
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -116,6 +178,9 @@ export default function BackgroundPage() {
   const releaseRef = useRef<(() => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cutoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourceImageRef = useRef<HTMLImageElement | null>(null);
+  const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const controlsRef = useRef<CutoutControls>(DEFAULT_CONTROLS);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("loading");
   const [modelError, setModelError] = useState<string | null>(null);
@@ -131,6 +196,10 @@ export default function BackgroundPage() {
   const [dragOver, setDragOver] = useState(false);
   const [compare, setCompare] = useState(50);
   const [dragging, setDragging] = useState(false);
+
+  const [intensity, setIntensity] = useState(DEFAULT_CONTROLS.intensity);
+  const [feather, setFeather] = useState(DEFAULT_CONTROLS.feather);
+  const [edgeContrast, setEdgeContrast] = useState(DEFAULT_CONTROLS.contrast);
 
   const [storageLabel, setStorageLabel] = useState("—");
   const [storageDetail, setStorageDetail] = useState("");
@@ -209,37 +278,68 @@ export default function BackgroundPage() {
 
   /* ------------------------------ processing ------------------------------ */
 
-  const runSegmentation = useCallback(async (image: HTMLImageElement) => {
-    const generator = pipelineRef.current;
-    if (!generator || processingRef.current) return;
-    processingRef.current = true;
-    setError(null);
-    setPhase("segmenting");
+  // Keep the latest control values in a ref so the (stable) render callback can
+  // read them without being recreated on every slider move.
+  useEffect(() => {
+    controlsRef.current = { intensity, feather, contrast: edgeContrast };
+  }, [intensity, feather, edgeContrast]);
 
-    try {
-      const input = resizeToCanvas(image);
-      const output = await generator(input, { threshold: 0.5 });
-      if (!aliveRef.current) return;
-      setPhase("compositing");
-
-      const first = Array.isArray(output) ? output[0] : output;
-      const rawMask = first?.mask ?? first;
-      if (!rawMask) throw new Error("Unexpected model output");
-
-      const mask = maskToCanvas(rawMask);
-      const cutout = compositeCutout(image, mask);
-      cutoutCanvasRef.current = cutout;
-      setCutoutUrl(cutout.toDataURL("image/png"));
-      setPhase("done");
-    } catch (err) {
-      if (aliveRef.current) {
-        setError(err instanceof Error ? err.message : "Failed to remove background");
-        setPhase("error");
-      }
-    } finally {
-      processingRef.current = false;
-    }
+  const renderCutout = useCallback(() => {
+    const source = sourceImageRef.current;
+    const mask = maskCanvasRef.current;
+    if (!source || !mask) return;
+    const cutout = compositeCutout(source, mask, controlsRef.current);
+    cutoutCanvasRef.current = cutout;
+    setCutoutUrl(cutout.toDataURL("image/png"));
   }, []);
+
+  // Re-composite (debounced) whenever a control moves and we have a mask.
+  useEffect(() => {
+    if (!maskCanvasRef.current) return;
+    const timer = window.setTimeout(renderCutout, 80);
+    return () => window.clearTimeout(timer);
+  }, [intensity, feather, edgeContrast, renderCutout]);
+
+  const resetControls = useCallback(() => {
+    setIntensity(DEFAULT_CONTROLS.intensity);
+    setFeather(DEFAULT_CONTROLS.feather);
+    setEdgeContrast(DEFAULT_CONTROLS.contrast);
+  }, []);
+
+  const runSegmentation = useCallback(
+    async (image: HTMLImageElement) => {
+      const generator = pipelineRef.current;
+      if (!generator || processingRef.current) return;
+      processingRef.current = true;
+      setError(null);
+      setPhase("segmenting");
+
+      try {
+        const input = resizeToCanvas(image);
+        const output = await generator(input, { threshold: 0.5 });
+        if (!aliveRef.current) return;
+        setPhase("compositing");
+
+        const first = Array.isArray(output) ? output[0] : output;
+        const rawMask = first?.mask ?? first;
+        if (!rawMask) throw new Error("Unexpected model output");
+
+        const mask = maskToCanvas(rawMask);
+        maskCanvasRef.current = mask;
+        sourceImageRef.current = image;
+        renderCutout();
+        setPhase("done");
+      } catch (err) {
+        if (aliveRef.current) {
+          setError(err instanceof Error ? err.message : "Failed to remove background");
+          setPhase("error");
+        }
+      } finally {
+        processingRef.current = false;
+      }
+    },
+    [renderCutout],
+  );
 
   const acceptFile = useCallback(
     (file: File) => {
@@ -252,6 +352,8 @@ export default function BackgroundPage() {
       setFileName(file.name);
       setCutoutUrl(null);
       cutoutCanvasRef.current = null;
+      maskCanvasRef.current = null;
+      sourceImageRef.current = null;
       setPhase("idle");
       setCompare(50);
 
@@ -336,9 +438,12 @@ export default function BackgroundPage() {
     setCutoutUrl(null);
     setSourceSize(null);
     cutoutCanvasRef.current = null;
+    maskCanvasRef.current = null;
+    sourceImageRef.current = null;
     setPhase("idle");
     setError(null);
     setCompare(50);
+    resetControls();
   };
 
   /* ------------------------------ derived UI ------------------------------ */
@@ -535,6 +640,22 @@ export default function BackgroundPage() {
                 )}
               </div>
             </div>
+
+            {cutoutUrl ? (
+              <div className="w-full max-w-[560px] rounded-[20px] border border-[var(--border)] bg-[var(--bg-soft)] p-5">
+                <div className="mb-5 flex items-center justify-between">
+                  <div className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)]">Adjust cutout</div>
+                  <button onClick={resetControls} className="mono text-[10px] text-[var(--text-muted)] underline-offset-2 transition hover:text-[var(--text)] hover:underline">
+                    Reset
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-5">
+                  <Slider label="Intensity" value={intensity} onChange={setIntensity} min={0} max={150} suffix="%" hint="How strongly the background is stripped away." />
+                  <Slider label="Edge softness" value={feather} onChange={setFeather} suffix="%" hint="Feather the cut-out edge for a softer blend." />
+                  <Slider label="Edge contrast" value={edgeContrast} onChange={setEdgeContrast} suffix="%" hint="Harder edges - good for logos and crisp subjects." />
+                </div>
+              </div>
+            ) : null}
 
             <div className="flex w-full max-w-[560px] items-center justify-center gap-3">
               <button
