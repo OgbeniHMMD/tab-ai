@@ -1,10 +1,10 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import type { Plugin, UserConfig } from "vite";
+import type { Plugin, UserConfig, ViteDevServer } from "vite";
 import { defineConfig } from "vite";
 import Pages from "vite-plugin-pages";
 
@@ -12,6 +12,47 @@ const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 /** onnxruntime-web ships its WASM runtime as loose files next to a JS loader. */
 const ORT_DIST = resolve(projectRoot, "node_modules/onnxruntime-web/dist");
+
+/** Content types for the ORT runtime files we serve from `public/ort/`. */
+const ORT_CONTENT_TYPES: Record<string, string> = {
+  ".mjs": "text/javascript; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".wasm": "application/wasm",
+};
+
+/**
+ * Serve `public/ort/**` ourselves, ahead of Vite's transform middleware.
+ *
+ * onnxruntime-web loads its runtime loader through a *dynamic* `import()` whose
+ * specifier is a runtime variable. Vite cannot analyze that, so it rewrites the
+ * call to `__vite__injectQuery(url, 'import')`, producing a request like
+ * `/ort/ort-wasm-simd-threaded.jsep.mjs?import`. That request looks like a JS
+ * module import, but Vite refuses to transform anything under `public/`
+ * (`ERR_LOAD_PUBLIC_URL`), so the `import()` rejects with "Failed to fetch
+ * dynamically imported module".
+ *
+ * Serving the copied files directly keeps them same-origin and byte-identical to
+ * `node_modules/onnxruntime-web/dist`, which is exactly what the loader expects.
+ * This only runs for `vite dev`; in production the files are copied verbatim
+ * and served by the static host, with no transform pipeline to trip over.
+ */
+function serveOrtRuntime(server: ViteDevServer, dir: string): void {
+  const base = server.config.base.replace(/\/$/, "");
+  const prefix = `${base}/ort/`;
+
+  server.middlewares.use((req, res, next) => {
+    const pathname = (req.url ?? "").split("?")[0];
+    if (!pathname.startsWith(prefix)) return next();
+
+    const filePath = resolve(dir, decodeURIComponent(pathname.slice(prefix.length)));
+    // Reject path traversal and unknown files; let Vite handle anything else.
+    if (!filePath.startsWith(dir + sep) || !existsSync(filePath)) return next();
+
+    res.setHeader("Content-Type", ORT_CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    createReadStream(filePath).pipe(res);
+  });
+}
 
 /**
  * Copy the onnxruntime-web WASM runtime (`.wasm` + its `.mjs` loader glue) into
@@ -42,8 +83,9 @@ function copyOrtWasm(): Plugin {
     configResolved(config) {
       publicOrtDir = resolve(config.root, "public/ort");
     },
-    configureServer() {
+    configureServer(server) {
       copy();
+      serveOrtRuntime(server, publicOrtDir);
     },
     buildStart() {
       copy();
