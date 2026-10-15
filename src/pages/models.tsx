@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { MODELS, loadedKey, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
 import type { WebCapabilities } from "../shared/capabilities";
 import { probeModelCache, readPref } from "../shared/storage";
-import { Badge, DownloadCard, StatusPill, type StatusKind } from "../shared/ui";
+import { Badge, DownloadCard, LoadingDialog, StatusPill, type StatusKind } from "../shared/ui";
 
 /** Only instruct models can actually chat, so only they are offered here. */
 const CHAT_MODELS: ChatModel[] = MODELS.filter((m) => m.kind === "instruct");
@@ -106,6 +106,10 @@ export default function ModelsPage() {
 
   const currentModel = CHAT_MODELS.find((m) => m.id === modelId) ?? null;
   const showProgress = Boolean(currentModel) && !ready && phase === "loading";
+  const downloading = Boolean(download && download.overall < 100);
+  // Weights are on disk (or were cached) — the remaining wait is the session
+  // build, which gets the full-screen popup instead of a thin status row.
+  const buildingSession = showProgress && !downloading;
   const showError = Boolean(currentModel) && phase === "error";
   const showOpen = Boolean(currentModel) && ready;
 
@@ -223,11 +227,11 @@ export default function ModelsPage() {
         {/* Progress / error / open-chat panel for the active model */}
         <section className="mb-6">
           {showProgress ? (
-            download && download.overall < 100 ? (
+            downloading ? (
               <DownloadCard
                 modelLabel={currentModel!.label}
                 sizeLabel={currentModel!.size}
-                progress={download}
+                progress={download!}
                 footer={
                   <span className="mono flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
@@ -235,12 +239,7 @@ export default function ModelsPage() {
                   </span>
                 }
               />
-            ) : (
-              <div className="flex items-center gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3.5">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                <span className="mono text-[11px] text-[var(--text-muted)]">{status}</span>
-              </div>
-            )
+            ) : null
           ) : showError ? (
             <div className="rounded-[16px] border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
               <div className="text-[13px] font-[550] text-red-700 dark:text-red-300">Couldn't load {currentModel!.label}</div>
@@ -266,6 +265,11 @@ export default function ModelsPage() {
 
         <p className={`mono text-[11px] ${error && currentModel ? "text-red-600 dark:text-red-400" : "text-[var(--text-faint)]"}`}>{status}</p>
       </div>
+
+      {/* Popup for the post-download session build (weights are cached; this is
+          the ORT session warming up). The download itself keeps its inline
+          DownloadCard above. */}
+      <LoadingDialog open={buildingSession} status={status} progress={null} modelLabel={currentModel?.label} sizeLabel={currentModel?.size} />
     </div>
   );
 }

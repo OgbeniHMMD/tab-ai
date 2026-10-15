@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 
 import { MODELS, useChatSession, type Role } from "../shared/chatSession";
-import { Badge, Slider, StatusPill, type StatusKind } from "../shared/ui";
+import { Badge, LoadingDialog, Slider, StatusPill, type StatusKind } from "../shared/ui";
 
 /* -------------------------------------------------------------------------- */
 /*  Small pieces                                                              */
@@ -35,6 +35,7 @@ export default function ChatPage() {
     ready,
     error,
     status,
+    download,
     phase,
     messages,
     system,
@@ -55,11 +56,22 @@ export default function ChatPage() {
   } = useChatSession();
 
   const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Follow the tail of the transcript as it streams.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages, streaming]);
+
+  // Keep the composer ready to type into: focus it on arrival, once the model
+  // becomes usable, and again after each reply — but never yank focus away from
+  // another field the user is editing (e.g. the system prompt).
+  useEffect(() => {
+    if (phase !== "ready" || busy) return;
+    const active = document.activeElement;
+    const editing = active instanceof HTMLElement && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+    if (!editing) inputRef.current?.focus({ preventScroll: true });
+  }, [phase, busy]);
 
   // No model loaded yet — send the user to the catalog to pick one.
   if (!modelId) return <Navigate to="/models" replace />;
@@ -79,9 +91,9 @@ export default function ChatPage() {
 
   return (
     <div className="flex w-full flex-1 flex-col items-center">
-      <div className="flex w-full max-w-[760px] flex-col px-6 pb-16 pt-8">
+      <div className="flex min-h-[calc(100vh_-_112px_-_var(--safe-area-inset-top))] w-full max-w-[760px] flex-col px-6 pb-4 pt-8">
         {/* Compact header: current model + change / new chat */}
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <header className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Badge tone="invert">{model.label}</Badge>
             <StatusPill status={pillStatus}>{pillLabel}</StatusPill>
@@ -112,7 +124,7 @@ export default function ChatPage() {
 
         {/* System prompt + generation settings */}
         {showSettings ? (
-          <section className="mb-4">
+          <section className="mb-4 shrink-0">
             <details className="group rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)]">
               <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3">
                 <span className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)]">System &amp; settings</span>
@@ -174,29 +186,24 @@ export default function ChatPage() {
           </section>
         ) : null}
 
-        {/* Status + resume control, when the model isn't ready yet */}
-        {!showSettings ? (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3">
+        {/* Status + resume control, when the model isn't ready yet. While it
+            loads we hand the screen to the popup below instead. */}
+        {!showSettings && phase !== "loading" ? (
+          <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3">
             <p className={`mono text-[11px] ${error ? "text-red-600 dark:text-red-400" : "text-[var(--text-faint)]"}`}>{status}</p>
-            {phase === "loading" ? (
-              <span className="mono flex items-center gap-2 text-[10px] text-[var(--text-faint)]">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-                loading…
-              </span>
-            ) : (
-              <button
-                onClick={retry}
-                className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
-              >
-                Reload model
-              </button>
-            )}
+            <button
+              onClick={retry}
+              className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+            >
+              Reload model
+            </button>
           </div>
         ) : null}
 
-        {/* Transcript */}
-        <section className="mb-3">
-          <div className="max-h-[56vh] min-h-[160px] overflow-y-auto rounded-[20px] border border-[var(--border)] bg-[var(--bg-soft)] p-4">
+        {/* Transcript — the only growing, scrolling region; the composer below
+            stays pinned to the bottom of the viewport. */}
+        <section className="mb-3 flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-[20px] border border-[var(--border)] bg-[var(--bg-soft)] p-4">
             {messages.length === 0 && !streaming && ready ? (
               <p className="text-[13px] text-[var(--text-faint)]">{system.trim() ? "System prompt set. " : ""}Ask anything to start the conversation.</p>
             ) : null}
@@ -220,16 +227,17 @@ export default function ChatPage() {
         </section>
 
         {/* Composer */}
-        <section className="mb-3">
+        <section className="shrink-0">
           <div className="flex items-end gap-2">
             <textarea
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              rows={1}
+              rows={3}
               placeholder={showSettings ? "Message…  (Enter to send, Shift+Enter for newline)" : "Waiting for the model…"}
               disabled={!showSettings || busy}
-              className="mono max-h-[160px] min-h-[42px] flex-1 resize-none rounded-[12px] border border-[var(--border)] bg-[var(--bg-soft)] px-3.5 py-2.5 text-[13px] text-[var(--text)] placeholder:text-[var(--text-faint)] focus:border-[var(--text)] focus:outline-none disabled:opacity-50"
+              className="mono max-h-[240px] min-h-[80px] flex-1 resize-none rounded-[12px] border border-[var(--border)] bg-[var(--bg-soft)] px-3.5 py-2.5 text-[13px] leading-6 text-[var(--text)] placeholder:text-[var(--text-faint)] focus:border-[var(--text)] focus:outline-none disabled:opacity-50"
             />
             {busy ? (
               <button onClick={stop} className="rounded-[12px] border border-[var(--border-strong)] px-5 py-2.5 text-[13px] font-[500] text-[var(--text)] transition hover:border-[var(--text)]">
@@ -247,6 +255,10 @@ export default function ChatPage() {
           </div>
         </section>
       </div>
+
+      {/* Full-screen popup while the model downloads + builds, so the wait has
+          a clear focus instead of a single muted status line. */}
+      <LoadingDialog open={phase === "loading"} status={status} progress={download} modelLabel={model.label} sizeLabel={model.size} />
     </div>
   );
 }
