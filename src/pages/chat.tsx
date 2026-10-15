@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 
 import { MODELS, useChatSession, type Role } from "../shared/chatSession";
-import { Badge, LoadingDialog, Slider, StatusPill, type StatusKind } from "../shared/ui";
+import { Badge, LoadingDialog, Slider, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
 
 /* -------------------------------------------------------------------------- */
 /*  Small pieces                                                              */
@@ -57,6 +57,10 @@ export default function ChatPage() {
 
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Model loading gets a dismissible popup; dismissing leaves a compact
+  // "Show progress" row behind so the wait is never invisible.
+  const loading = useDismissibleLoader(phase === "loading");
 
   // Follow the tail of the transcript as it streams.
   useEffect(() => {
@@ -186,17 +190,27 @@ export default function ChatPage() {
           </section>
         ) : null}
 
-        {/* Status + resume control, when the model isn't ready yet. While it
-            loads we hand the screen to the popup below instead. */}
-        {!showSettings && phase !== "loading" ? (
+        {/* Status + resume control when the model isn't ready. While it loads
+            the popup owns the screen; once dismissed, this row takes over with
+            a way to bring the progress back. */}
+        {!showSettings && !loading.open ? (
           <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3">
             <p className={`mono text-[11px] ${error ? "text-red-600 dark:text-red-400" : "text-[var(--text-faint)]"}`}>{status}</p>
-            <button
-              onClick={retry}
-              className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
-            >
-              Reload model
-            </button>
+            {phase === "loading" ? (
+              <button
+                onClick={loading.reopen}
+                className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+              >
+                Show progress
+              </button>
+            ) : (
+              <button
+                onClick={retry}
+                className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+              >
+                Reload model
+              </button>
+            )}
           </div>
         ) : null}
 
@@ -258,7 +272,7 @@ export default function ChatPage() {
 
       {/* Full-screen popup while the model downloads + builds, so the wait has
           a clear focus instead of a single muted status line. */}
-      <LoadingDialog open={phase === "loading"} status={status} progress={download} modelLabel={model.label} sizeLabel={model.size} />
+      <LoadingDialog open={loading.open} status={status} progress={download} modelLabel={model.label} sizeLabel={model.size} onClose={loading.dismiss} />
     </div>
   );
 }

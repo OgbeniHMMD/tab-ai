@@ -3,7 +3,7 @@ import type { ChangeEvent, DragEvent } from "react";
 
 import { acquirePipeline, formatBytes, type DownloadProgress } from "../shared/modelLoader";
 import { clearModelCache, estimateStorage } from "../shared/storage";
-import { DownloadCard, ProgressBar, StatusPill } from "../shared/ui";
+import { DownloadCard, LoadingDialog, ProgressBar, Spinner, StatusPill, useDismissibleLoader } from "../shared/ui";
 
 /* -------------------------------------------------------------------------- */
 /*  Model catalog                                                             */
@@ -464,7 +464,14 @@ export default function BackgroundPage() {
   const hasImage = Boolean(originalUrl);
   const busy = phase === "segmenting" || phase === "compositing";
   const showDownloadCard = modelStatus === "loading" && download !== null && download.overall < 100;
+  // Weights are on disk; the remaining wait is the ORT session warming up,
+  // which gets the full-screen popup (the download keeps its inline card).
+  const buildingModel = modelStatus === "loading" && !showDownloadCard;
   const ready = modelStatus === "ready";
+
+  // The session-build popup is dismissible; once dismissed, a banner keeps the
+  // status visible with a way to reopen it.
+  const building = useDismissibleLoader(buildingModel);
 
   const statusLabel = modelStatus === "error" ? "Failed" : ready ? "Ready" : modelStatus === "loading" ? "Downloading" : "Idle";
 
@@ -473,6 +480,21 @@ export default function BackgroundPage() {
   return (
     <div className="flex w-full flex-1 flex-col items-center">
       <div className="flex w-full max-w-[640px] flex-col items-center px-6 pb-16 pt-10 md:pt-14">
+        {buildingModel && !building.open ? (
+          <div className="mb-6 flex w-full flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3">
+            <span className="mono flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+              Loading the model in the background…
+            </span>
+            <button
+              onClick={building.reopen}
+              className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+            >
+              Show progress
+            </button>
+          </div>
+        ) : null}
+
         {!hasImage ? (
           <>
             <div className="mb-8 w-full text-center">
@@ -583,7 +605,7 @@ export default function BackgroundPage() {
         ) : (
           <div className="flex w-full flex-col items-center gap-6">
             <div className="w-full max-w-[560px]">
-              {busy ? (
+              {busy && cutoutUrl ? (
                 <div className="rounded-[20px] border border-[var(--border)] bg-[var(--bg-soft)] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
                   <div className="flex items-center justify-between">
                     <span className="mono text-[11px] font-medium tracking-wide">{phase === "compositing" ? "Cleaning edges…" : "Removing background…"}</span>
@@ -644,13 +666,28 @@ export default function BackgroundPage() {
                     <div className="mono absolute left-4 top-4 rounded-full bg-black/70 px-3 py-1 text-[10px] tracking-wide text-white backdrop-blur">ORIGINAL</div>
                     <div className="mono absolute right-4 top-4 rounded-full bg-white px-3 py-1 text-[10px] font-medium tracking-wide text-black">CUTOUT</div>
                   </>
-                ) : (
+                ) : busy ? null : (
                   <div className="absolute inset-0 flex items-center justify-center">
                     <div className="mono rounded-full border border-[var(--border)] bg-white/90 px-4 py-2 text-[11px] text-[var(--text-muted)] backdrop-blur dark:bg-black/50">
-                      {busy ? "Processing…" : error ? error : "Ready"}
+                      {error ? error : "Ready"}
                     </div>
                   </div>
                 )}
+
+                {/* Processing overlay — pinned to the preview so the image stays in
+                    view and slider-triggered re-runs don't flash a full-screen modal. */}
+                {busy && !cutoutUrl ? (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg)]/60 backdrop-blur-[2px]">
+                    <div className="flex w-[240px] flex-col items-center gap-3 rounded-[20px] border border-[var(--border)] bg-[var(--bg-soft)] px-6 py-6 text-center shadow-[0_20px_60px_rgba(0,0,0,0.18)]">
+                      <Spinner className="h-9 w-9 text-[var(--text)]" />
+                      <div>
+                        <div className="text-[14px] font-[550] tracking-[-0.01em]">{phase === "compositing" ? "Cleaning edges…" : "Removing background…"}</div>
+                        <div className="mono mt-1 text-[10px] text-[var(--text-faint)]">On-device • nothing uploaded</div>
+                      </div>
+                      <ProgressBar indeterminate className="h-[5px] w-full" />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -773,6 +810,10 @@ export default function BackgroundPage() {
           <div className="mono mt-6 w-full rounded-full border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-2 text-center text-[11px] text-[var(--text-muted)]">{error}</div>
         ) : null}
       </div>
+
+      {/* Model session build gets the popup; the network download keeps its
+          inline DownloadCard so per-file progress isn't hidden behind a modal. */}
+      <LoadingDialog open={building.open} status="Warming up the model in your browser…" progress={null} modelLabel={MODNET.id} sizeLabel={MODNET.size} onClose={building.dismiss} />
     </div>
   );
 }

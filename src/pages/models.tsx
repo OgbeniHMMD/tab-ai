@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { MODELS, loadedKey, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
 import type { WebCapabilities } from "../shared/capabilities";
 import { probeModelCache, readPref } from "../shared/storage";
-import { Badge, DownloadCard, LoadingDialog, StatusPill, type StatusKind } from "../shared/ui";
+import { Badge, DownloadCard, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
 
 /** Only instruct models can actually chat, so only they are offered here. */
 const CHAT_MODELS: ChatModel[] = MODELS.filter((m) => m.kind === "instruct");
@@ -112,6 +112,10 @@ export default function ModelsPage() {
   const buildingSession = showProgress && !downloading;
   const showError = Boolean(currentModel) && phase === "error";
   const showOpen = Boolean(currentModel) && ready;
+
+  // The session-build popup is dismissible; once dismissed, a compact row keeps
+  // the status visible with a way to reopen it.
+  const building = useDismissibleLoader(buildingSession);
 
   const pillStatus: StatusKind = phase === "error" ? "error" : phase === "ready" ? "ready" : phase === "loading" ? "downloading" : "idle";
   const pillLabel = phase === "error" ? "Failed" : phase === "ready" ? "Ready" : phase === "loading" ? "Loading" : "Idle";
@@ -239,6 +243,16 @@ export default function ModelsPage() {
                   </span>
                 }
               />
+            ) : !building.open ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3.5">
+                <span className="mono text-[11px] text-[var(--text-muted)]">{status}</span>
+                <button
+                  onClick={building.reopen}
+                  className="mono rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+                >
+                  Show progress
+                </button>
+              </div>
             ) : null
           ) : showError ? (
             <div className="rounded-[16px] border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
@@ -269,7 +283,7 @@ export default function ModelsPage() {
       {/* Popup for the post-download session build (weights are cached; this is
           the ORT session warming up). The download itself keeps its inline
           DownloadCard above. */}
-      <LoadingDialog open={buildingSession} status={status} progress={null} modelLabel={currentModel?.label} sizeLabel={currentModel?.size} />
+      <LoadingDialog open={building.open} status={status} progress={null} modelLabel={currentModel?.label} sizeLabel={currentModel?.size} onClose={building.dismiss} />
     </div>
   );
 }
