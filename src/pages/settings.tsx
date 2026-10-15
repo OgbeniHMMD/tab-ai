@@ -31,13 +31,9 @@ function TokenMeter({ used, budget }: { used: number; budget: number }) {
         <div className={`h-full rounded-full transition-all ${barClass}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} />
       </div>
       {tone === "danger" ? (
-        <p className="mono mt-1.5 text-[10px] leading-4 text-red-600 dark:text-red-400">
-          System + skills exceed the budget — oldest chat turns will be dropped to fit.
-        </p>
+        <p className="mono mt-1.5 text-[10px] leading-4 text-red-600 dark:text-red-400">System + skills exceed the budget — oldest chat turns will be dropped to fit.</p>
       ) : tone === "warn" ? (
-        <p className="mono mt-1.5 text-[10px] leading-4 text-amber-600 dark:text-amber-400">
-          Using more than half the budget on instructions leaves less room for chat history.
-        </p>
+        <p className="mono mt-1.5 text-[10px] leading-4 text-amber-600 dark:text-amber-400">Using more than half the budget on instructions leaves less room for chat history.</p>
       ) : (
         <p className="mono mt-1.5 text-[10px] leading-4 text-[var(--text-faint)]">Counted with the active model's tokenizer once it's loaded.</p>
       )}
@@ -45,19 +41,7 @@ function TokenMeter({ used, budget }: { used: number; budget: number }) {
   );
 }
 
-function SkillRow({
-  skill,
-  active,
-  onToggle,
-  onEdit,
-  onDelete,
-}: {
-  skill: Skill;
-  active: boolean;
-  onToggle: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
+function SkillRow({ skill, active, onToggle, onEdit, onDelete }: { skill: Skill; active: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void }) {
   return (
     <div className="flex items-start justify-between gap-3 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
       <div className="min-w-0">
@@ -161,21 +145,7 @@ function SkillEditor({ initial, onSave, onCancel }: { initial: Skill | null; onS
 /* -------------------------------------------------------------------------- */
 
 export default function SettingsPage() {
-  const {
-    system,
-    setSystem,
-    skills,
-    activeSkillIds,
-    composedSystem,
-    toggleSkill,
-    upsertSkill,
-    removeSkill,
-    resetSkills,
-    countTokens,
-    settings,
-    setSettings,
-    resetSettings,
-  } = useChatSession();
+  const { system, setSystem, skills, activeSkillIds, composedSystem, toggleSkill, upsertSkill, removeSkill, resetSkills, countTokens, settings, setSettings, resetSettings } = useChatSession();
 
   // `null` = editor closed; a Skill = editing that one; "new" sentinel = creating.
   const [editing, setEditing] = useState<Skill | null | "new">(null);
@@ -272,11 +242,10 @@ export default function SettingsPage() {
               <span className="text-[var(--text-faint)] transition group-open:rotate-180">▾</span>
             </summary>
             <div className="border-t border-[var(--border)] px-4 py-3">
-              {composedSystem.trim() ? (
-                <pre className="mono max-h-64 overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-[var(--text-muted)]">{composedSystem}</pre>
-              ) : (
-                <p className="text-[12px] text-[var(--text-faint)]">No system prompt or skills active — the model gets only the conversation.</p>
-              )}
+              <pre className="mono max-h-64 overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-[var(--text-muted)]">{composedSystem}</pre>
+              <p className="mono mt-3 text-[10px] leading-4 text-[var(--text-faint)]">
+                A baseline honesty instruction is always prepended — it can't be turned off by editing the system prompt or disabling skills.
+              </p>
             </div>
           </details>
         </section>
@@ -293,10 +262,28 @@ export default function SettingsPage() {
                 max={1.5}
                 step={0.05}
                 format={(v) => v.toFixed(2)}
+                hint="0 = greedy decoding: always pick the most likely token, so replies are deterministic and less likely to wander. Above 0 adds randomness (varied but less reliable); it also turns sampling on."
                 onChange={(v) => setSettings((s) => ({ ...s, temperature: v }))}
               />
-              <Slider label="Top-p" value={settings.topP} min={0.1} max={1} step={0.05} format={(v) => v.toFixed(2)} onChange={(v) => setSettings((s) => ({ ...s, topP: v }))} />
-              <Slider label="Max new tokens" value={settings.maxNewTokens} min={64} max={1024} step={32} onChange={(v) => setSettings((s) => ({ ...s, maxNewTokens: v }))} />
+              <Slider
+                label="Top-p"
+                value={settings.topP}
+                min={0.1}
+                max={1}
+                step={0.05}
+                format={(v) => v.toFixed(2)}
+                hint="Nucleus sampling cutoff. Note: the current runtime version does not apply top-p, so changing it has no effect yet."
+                onChange={(v) => setSettings((s) => ({ ...s, topP: v }))}
+              />
+              <Slider
+                label="Max new tokens"
+                value={settings.maxNewTokens}
+                min={64}
+                max={1024}
+                step={32}
+                hint="Upper bound on how many tokens the reply may generate. 128 is about a short paragraph; code or step-by-step answers can be cut off if set too low."
+                onChange={(v) => setSettings((s) => ({ ...s, maxNewTokens: v }))}
+              />
               <Slider
                 label="Repetition penalty"
                 value={settings.repetitionPenalty}
@@ -304,10 +291,23 @@ export default function SettingsPage() {
                 max={1.5}
                 step={0.05}
                 format={(v) => v.toFixed(2)}
+                hint="Above 1.0 discourages the model from reusing tokens it already produced or read. 1.15 is mild; past ~1.3 small models start to sound incoherent."
                 onChange={(v) => setSettings((s) => ({ ...s, repetitionPenalty: v }))}
               />
+              <Slider
+                label="No-repeat n-gram"
+                value={settings.noRepeatNgramSize}
+                min={0}
+                max={6}
+                step={1}
+                hint="Bans the model from reusing any run of this many tokens, which kills the loops small models fall into. 3 is a good default; 0 turns the ban off; raise to 4 if answers feel forced around your question's wording."
+                onChange={(v) => setSettings((s) => ({ ...s, noRepeatNgramSize: v }))}
+              />
             </div>
-            <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="mono mt-4 text-[10px] leading-4 text-[var(--text-faint)]">
+              Defaults are tuned for the small on-device models: greedy decoding (temperature 0), a tight output cap, and a repetition penalty plus no-repeat n-gram to stop loops.
+            </p>
+            <div className="mt-3 flex items-center justify-between gap-3">
               <span className="mono text-[10px] text-[var(--text-faint)]">Non-zero temperature enables sampling.</span>
               <button
                 onClick={resetSettings}
@@ -320,7 +320,11 @@ export default function SettingsPage() {
         </section>
 
         <p className="mono text-[11px] text-[var(--text-faint)]">
-          Looking for models? <Link to="/models" className="underline underline-offset-2">Change the active model</Link>.
+          Looking for models?{" "}
+          <Link to="/models" className="underline underline-offset-2">
+            Change the active model
+          </Link>
+          .
         </p>
       </div>
     </div>

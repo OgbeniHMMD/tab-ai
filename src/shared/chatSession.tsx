@@ -101,13 +101,18 @@ export interface ChatSettings {
   topP: number;
   maxNewTokens: number;
   repetitionPenalty: number;
+  /** 0 disables the ban; 3 is a good default for small models. */
+  noRepeatNgramSize: number;
 }
 
 export const DEFAULT_SETTINGS: ChatSettings = {
-  temperature: 0.6,
+  // temperature 0 => greedy decoding (`do_sample: false`), the most reliable
+  // setting for tiny models; deterministic and less prone to confabulation.
+  temperature: 0,
   topP: 0.95,
-  maxNewTokens: 256,
+  maxNewTokens: 128,
   repetitionPenalty: 1.15,
+  noRepeatNgramSize: 3,
 };
 
 const SETTINGS_KEY = "chat:settings:v1";
@@ -599,6 +604,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         temperature: settings.temperature,
         top_p: settings.topP,
         repetition_penalty: settings.repetitionPenalty,
+        no_repeat_ngram_size: settings.noRepeatNgramSize,
         streamer,
         stopping_criteria: stopper,
       });
