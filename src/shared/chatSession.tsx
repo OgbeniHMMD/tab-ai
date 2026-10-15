@@ -18,6 +18,11 @@ export interface ChatModel {
   note: string;
 }
 
+/*
+ * `size` is the real `q4` download size, measured from the Hugging Face CDN blob
+ * (`content-length`) for each model's `dtype: "q4"` files — not the parameter
+ * count, and not the repo's total footprint.
+ */
 export const MODELS: ChatModel[] = [
   {
     id: "Xenova/distilgpt2",
@@ -29,21 +34,28 @@ export const MODELS: ChatModel[] = [
   {
     id: "onnx-community/SmolLM2-135M-Instruct-ONNX",
     label: "SmolLM2 135M",
-    size: "~80 MB (q4)",
+    size: "~172 MB (q4)",
     kind: "instruct",
     note: "Follows instructions. Good on low-end devices.",
   },
   {
+    id: "onnx-community/SmolLM2-360M-Instruct-ONNX",
+    label: "SmolLM2 360M",
+    size: "~368 MB (q4)",
+    kind: "instruct",
+    note: "A step up from 135M — still light enough for WASM.",
+  },
+  {
     id: "onnx-community/Qwen2.5-0.5B-Instruct",
     label: "Qwen2.5 0.5B",
-    size: "~280 MB (q4)",
+    size: "~749 MB (q4)",
     kind: "instruct",
     note: "Better reasoning. Best with WebGPU.",
   },
   {
     id: "onnx-community/Qwen2.5-1.5B-Instruct",
     label: "Qwen2.5 1.5B",
-    size: "~1 GB (q4)",
+    size: "~1.7 GB (q4)",
     kind: "instruct",
     note: "Noticeably smarter. Needs WebGPU.",
   },
@@ -64,6 +76,13 @@ export interface TokenRate {
 }
 
 export const rateKey = (modelId: string) => `tps:v1:${modelId}`;
+
+/**
+ * Persisted "this model has been loaded (and its weights cached) at least once"
+ * marker. Used only as a fallback for {@link probeModelCache} — see
+ * `src/shared/storage.ts` for why Cache Storage is the authoritative signal.
+ */
+export const loadedKey = (modelId: string) => `loaded:v1:${modelId}`;
 
 /* -------------------------------------------------------------------------- */
 /*  Chat types, defaults & helpers                                            */
@@ -388,6 +407,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         if (cancelled() || !instance || !aliveRef.current) return null;
         generatorRef.current = instance;
         loadedRef.current.add(activeModel);
+        // Record the durable "loaded once" marker as a fallback for the models
+        // page's cache probe (see `probeModelCache`). Cache Storage is primary.
+        writePref(loadedKey(activeModel), true);
         setReady(true);
         setStatus("Model ready. Say something.");
         armIdle();

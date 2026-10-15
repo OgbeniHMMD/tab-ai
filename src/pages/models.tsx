@@ -1,13 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { MODELS, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
+import { MODELS, loadedKey, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
 import type { WebCapabilities } from "../shared/capabilities";
-import { readPref } from "../shared/storage";
+import { probeModelCache, readPref } from "../shared/storage";
 import { Badge, DownloadCard, StatusPill, type StatusKind } from "../shared/ui";
 
 /** Only instruct models can actually chat, so only they are offered here. */
 const CHAT_MODELS: ChatModel[] = MODELS.filter((m) => m.kind === "instruct");
+
+/* -------------------------------------------------------------------------- */
+/*  Cached detection                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Reliable "already cached" check, in priority order:
+ *  1. loaded in this session (the weights are in memory) — instant, no I/O;
+ *  2. a Cache Storage probe (authoritative — see `probeModelCache`);
+ *  3. the persisted "loaded once" flag, only when Cache Storage is unavailable.
+ */
+async function detectCached(modelId: string, loadedInSession: boolean): Promise<boolean> {
+  if (loadedInSession) return true;
+  const probed = await probeModelCache(modelId);
+  if (probed !== null) return probed;
+  return readPref<boolean>(loadedKey(modelId)) === true;
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Small pieces                                                              */
@@ -61,35 +78,68 @@ export default function ModelsPage() {
   const session = useChatSession();
   const { caps, recommended, modelId, ready, error, status, download, phase, rateVersion, busy, selectModel, retry, isLoaded } = session;
 
-  // The card the user is looking at (defaults to the active model, else the
-  // device recommendation), plus whether they've confirmed the download.
-  const [pickedId, setPickedId] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
+  // The card the user has "armed" with the first click. Only uncached models
+  // ever reach this state — a cached model loads on the first click.
+  const [armedId, setArmedId] = useState<string | null>(null);
+  // The model the user asked to load; once it's ready we continue to /chat.
+  const [launchId, setLaunchId] = useState<string | null>(null);
+  // Models whose weights are already on disk. Seeded synchronously from the
+  // persisted flag, then refined by an async Cache Storage probe.
+  const [cachedIds, setCachedIds] = useState<Set<string>>(() => new Set(CHAT_MODELS.filter((m) => readPref<boolean>(loadedKey(m.id))).map((m) => m.id)));
 
-  const selectedId = pickedId ?? modelId ?? recommended;
-  const selected = CHAT_MODELS.find((m) => m.id === selectedId) ?? CHAT_MODELS[0];
+  const isCached = (id: string) => cachedIds.has(id) || isLoaded(id);
 
-  const isCurrent = selectedId === modelId;
-  const showOpen = isCurrent && ready;
-  const showProgress = isCurrent && !ready && phase === "loading";
-  const showError = isCurrent && phase === "error";
+  // Re-probe the caches whenever the active model or its readiness changes.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const results = await Promise.all(CHAT_MODELS.map(async (m) => [m.id, await detectCached(m.id, isLoaded(m.id))] as const));
+      if (!cancelled) setCachedIds(new Set(results.filter(([, cached]) => cached).map(([id]) => id)));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `isLoaded` is a stable-in-practice accessor over a ref; `modelId`/`ready`
+    // are the real triggers for a re-probe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId, ready, rateVersion]);
+
+  const currentModel = CHAT_MODELS.find((m) => m.id === modelId) ?? null;
+  const showProgress = Boolean(currentModel) && !ready && phase === "loading";
+  const showError = Boolean(currentModel) && phase === "error";
+  const showOpen = Boolean(currentModel) && ready;
 
   const pillStatus: StatusKind = phase === "error" ? "error" : phase === "ready" ? "ready" : phase === "loading" ? "downloading" : "idle";
   const pillLabel = phase === "error" ? "Failed" : phase === "ready" ? "Ready" : phase === "loading" ? "Loading" : "Idle";
 
   // Once the confirmed model finishes building, move on to the chat surface.
   useEffect(() => {
-    if (confirmed && ready && modelId === selectedId) navigate("/chat");
-  }, [confirmed, ready, modelId, selectedId, navigate]);
+    if (launchId && ready && modelId === launchId) navigate("/chat");
+  }, [launchId, ready, modelId, navigate]);
 
-  const pick = (id: string) => {
-    setPickedId(id);
-    setConfirmed(false);
+  /** Second step — actually kick off the load/download. */
+  const startLoad = (id: string) => {
+    setArmedId(null);
+    setLaunchId(id);
+    selectModel(id);
   };
 
-  const confirm = () => {
-    setConfirmed(true);
-    selectModel(selectedId);
+  /**
+   * First click on a card. Cached models load immediately (no download to
+   * confirm); uncached models are only *armed* — the download never starts
+   * until the user presses "Download & load".
+   */
+  const onCardClick = (model: ChatModel) => {
+    if (busy) return;
+    if (model.id === modelId && ready) {
+      navigate("/chat");
+      return;
+    }
+    if (isCached(model.id)) {
+      startLoad(model.id);
+      return;
+    }
+    setArmedId((prev) => (prev === model.id ? null : model.id));
   };
 
   return (
@@ -101,7 +151,7 @@ export default function ModelsPage() {
             <StatusPill status={pillStatus}>{pillLabel}</StatusPill>
           </div>
           <p className="mt-3 max-w-[52ch] text-[14px] leading-6 text-[var(--text-muted)]">
-            Pick a model to load it — first load downloads from Hugging Face, afterwards it's cached and works offline. Everything runs client-side; your prompts never leave the tab.
+            Pick a model, then confirm to load it — first load downloads from Hugging Face, afterwards it's cached and works offline. Everything runs client-side; your prompts never leave the tab.
           </p>
         </header>
 
@@ -116,44 +166,67 @@ export default function ModelsPage() {
           <div className="mono mb-2 text-[10px] uppercase tracking-widest text-[var(--text-faint)]">Models</div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {CHAT_MODELS.map((model) => {
-              const active = model.id === selectedId;
+              const armed = armedId === model.id;
               const isRecommended = model.id === recommended;
               const current = model.id === modelId;
+              const cached = isCached(model.id);
+              const highlighted = armed || current;
               return (
-                <button
+                <div
                   key={model.id}
-                  onClick={() => pick(model.id)}
-                  disabled={busy}
-                  className={`flex flex-col rounded-[16px] border p-3.5 text-left transition ${
-                    active ? "border-[var(--text)] bg-[var(--surface)] ring-1 ring-[var(--text)]" : "border-[var(--border)] bg-[var(--bg-soft)] hover:border-[var(--border-strong)]"
-                  } ${busy ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+                  className={`flex flex-col rounded-[16px] border p-3.5 transition ${
+                    highlighted ? "border-[var(--text)] bg-[var(--surface)] ring-1 ring-[var(--text)]" : "border-[var(--border)] bg-[var(--bg-soft)]"
+                  }`}
                 >
-                  <div className="flex w-full items-center justify-between gap-2">
-                    <span className="text-[14px] font-[550] tracking-[-0.01em]">{model.label}</span>
-                    <TokenRateBadge modelId={model.id} version={rateVersion} />
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    {isRecommended ? <Badge tone="good">recommended</Badge> : null}
-                    {current && ready ? <Badge tone="invert">active</Badge> : null}
-                    {current && !ready && phase === "loading" ? <Badge tone="warn">loading…</Badge> : null}
-                    {current && phase === "error" ? <Badge tone="danger">failed</Badge> : null}
-                  </div>
-                  <span className="mono mt-2 text-[11px] leading-4 text-[var(--text-muted)]">
-                    {model.size} · {model.note}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => onCardClick(model)}
+                    disabled={busy}
+                    aria-expanded={armed}
+                    className={`flex flex-col text-left transition ${busy ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+                  >
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <span className="text-[14px] font-[550] tracking-[-0.01em]">{model.label}</span>
+                      <TokenRateBadge modelId={model.id} version={rateVersion} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {isRecommended ? <Badge tone="good">recommended</Badge> : null}
+                      {current && ready ? <Badge tone="invert">active</Badge> : null}
+                      {current && !ready && phase === "loading" ? <Badge tone="warn">loading…</Badge> : null}
+                      {current && phase === "error" ? <Badge tone="danger">failed</Badge> : null}
+                      {cached ? <Badge tone="good">cached — load instantly</Badge> : null}
+                    </div>
+                    <span className="mono mt-2 text-[11px] leading-4 text-[var(--text-muted)]">
+                      {model.size} · {model.note}
+                    </span>
+                  </button>
+
+                  {armed ? (
+                    <div className="mt-3 border-t border-[var(--border)] pt-3">
+                      <p className="mono text-[10px] leading-5 text-[var(--text-faint)]">Downloads {model.size} the first time, then cached after first time.</p>
+                      <button
+                        type="button"
+                        onClick={() => startLoad(model.id)}
+                        disabled={busy}
+                        className="mt-2.5 w-full rounded-[10px] bg-[var(--text)] px-4 py-2 text-[12px] font-[500] text-[var(--bg)] transition hover:opacity-[0.9] disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        Download &amp; load
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               );
             })}
           </div>
         </section>
 
-        {/* Confirm / progress / open-chat panel for the selected model */}
+        {/* Progress / error / open-chat panel for the active model */}
         <section className="mb-6">
           {showProgress ? (
             download && download.overall < 100 ? (
               <DownloadCard
-                modelLabel={selected.label}
-                sizeLabel={selected.size}
+                modelLabel={currentModel!.label}
+                sizeLabel={currentModel!.size}
                 progress={download}
                 footer={
                   <span className="mono flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]">
@@ -170,7 +243,7 @@ export default function ModelsPage() {
             )
           ) : showError ? (
             <div className="rounded-[16px] border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
-              <div className="text-[13px] font-[550] text-red-700 dark:text-red-300">Couldn't load {selected.label}</div>
+              <div className="text-[13px] font-[550] text-red-700 dark:text-red-300">Couldn't load {currentModel!.label}</div>
               <p className="mono mt-1.5 break-words text-[11px] leading-5 text-red-600 dark:text-red-400">{error}</p>
               <button
                 onClick={retry}
@@ -182,42 +255,16 @@ export default function ModelsPage() {
           ) : showOpen ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] px-4 py-3.5">
               <span className="text-[13px] text-[var(--text-muted)]">
-                <span className="font-[550] text-[var(--text)]">{selected.label}</span> is loaded and ready.
+                <span className="font-[550] text-[var(--text)]">{currentModel!.label}</span> is loaded and ready.
               </span>
-              <button
-                onClick={() => navigate("/chat")}
-                className="rounded-[12px] bg-[var(--text)] px-5 py-2 text-[13px] font-[500] text-[var(--bg)] transition hover:opacity-[0.9]"
-              >
+              <button onClick={() => navigate("/chat")} className="rounded-[12px] bg-[var(--text)] px-5 py-2 text-[13px] font-[500] text-[var(--bg)] transition hover:opacity-[0.9]">
                 Open chat
               </button>
             </div>
-          ) : (
-            <div className="rounded-[16px] border border-[var(--border)] bg-[var(--bg-soft)] p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[14px] font-[550] tracking-[-0.01em]">{selected.label}</div>
-                  <p className="mono mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
-                    {selected.size} · {selected.note}
-                  </p>
-                  <p className="mono mt-2 text-[10px] leading-5 text-[var(--text-faint)]">
-                    {isLoaded(selected.id)
-                      ? "Already cached — only the session is rebuilt."
-                      : `Downloads ${selected.size} the first time, then cached in your browser.`}
-                  </p>
-                </div>
-                <button
-                  onClick={confirm}
-                  disabled={busy}
-                  className="shrink-0 rounded-[12px] bg-[var(--text)] px-5 py-2.5 text-[13px] font-[500] text-[var(--bg)] transition hover:opacity-[0.9] disabled:cursor-not-allowed disabled:opacity-30"
-                >
-                  {isLoaded(selected.id) ? "Load model" : "Download & load"}
-                </button>
-              </div>
-            </div>
-          )}
+          ) : null}
         </section>
 
-        <p className={`mono text-[11px] ${error && isCurrent ? "text-red-600 dark:text-red-400" : "text-[var(--text-faint)]"}`}>{status}</p>
+        <p className={`mono text-[11px] ${error && currentModel ? "text-red-600 dark:text-red-400" : "text-[var(--text-faint)]"}`}>{status}</p>
       </div>
     </div>
   );

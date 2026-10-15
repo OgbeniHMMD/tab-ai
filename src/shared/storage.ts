@@ -43,6 +43,38 @@ export async function listOwnedCaches(): Promise<string[]> {
   }
 }
 
+/**
+ * Whether a model's weights look like they're already cached in this browser.
+ *
+ * We probe **Cache Storage** rather than trusting a persisted flag because it is
+ * authoritative: transformers.js writes every fetched weight file into Cache
+ * Storage keyed by its `huggingface.co/<model>/resolve/<rev>/…` URL, so a hit
+ * means the bytes really are on disk — and it stays correct even after the user
+ * runs "Clear model cache" (which does not touch `localStorage`). A hit also
+ * requires an `.onnx` file, so a cache that only holds `tokenizer.json` won't
+ * falsely read as "cached".
+ *
+ * Returns `null` when the Cache API is unavailable (e.g. some private-mode
+ * setups), letting callers fall back to the persisted "loaded once" flag.
+ */
+export async function probeModelCache(modelId: string): Promise<boolean | null> {
+  if (typeof caches === "undefined" || !caches.keys) return null;
+  try {
+    const names = await caches.keys();
+    for (const name of names) {
+      const cache = await caches.open(name);
+      const requests = await cache.keys();
+      for (const request of requests) {
+        const url = request.url;
+        if (url.includes(`/${modelId}/`) && url.includes(".onnx")) return true;
+      }
+    }
+    return false;
+  } catch {
+    return null;
+  }
+}
+
 /** Names of our IndexedDB databases currently present. */
 export async function listOwnedDatabases(): Promise<string[]> {
   try {
