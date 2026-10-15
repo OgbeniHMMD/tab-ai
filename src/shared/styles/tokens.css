@@ -1,0 +1,85 @@
+/*
+ * Design tokens, extracted from the original `photo-Studio.html`.
+ * Light/dark are driven by `prefers-color-scheme`, so every component can just
+ * reference `var(--token)` (via Tailwind arbitrary values like `bg-[var(--bg)]`).
+ */
+:root {
+  --bg: #fbfaf8;
+  --bg-soft: #ffffff;
+  --surface: rgba(17, 17, 19, 0.04);
+  --surface-2: rgba(17, 17, 19, 0.07);
+  --surface-3: rgba(17, 17, 19, 0.1);
+  --border: rgba(17, 17, 19, 0.08);
+  --border-strong: rgba(17, 17, 19, 0.14);
+  --text: #111113;
+  --text-muted: #7a7a86;
+  --text-faint: #a9a9b5;
+  --accent: #111113;
+  --ok: #111113;
+  --danger: #dc2626;
+  --warn: #f59e0b;
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111113;
+    --bg-soft: #19191d;
+    --surface: hsla(0, 0%, 100%, 0.05);
+    --surface-2: hsla(0, 0%, 100%, 0.08);
+    --surface-3: hsla(0, 0%, 100%, 0.11);
+    --border: hsla(0, 0%, 100%, 0.08);
+    --border-strong: hsla(0, 0%, 100%, 0.14);
+    --text: #f5f5f3;
+    --text-muted: #8e8e98;
+    --text-faint: #5e5e69;
+  }
+}
+
+* {
+  font-variant-ligatures: common-ligatures;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: 'Instrument Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-weight: 400;
+  letter-spacing: -0.011em;
+}
+
+.display {
+  font-family: 'Newsreader', ui-serif, serif;
+  font-weight: 300;
+  letter-spacing: -0.03em;
+}
+
+.mono {
+  font-family: 'Fragment Mono', ui-monospace, monospace;
+}
+
+/* Transparent-background checkerboard for cutout previews. */
+.checker {
+  background-image:
+    linear-gradient(45deg, hsla(0, 0%, 50%, 0.1) 25%, transparent 0),
+    linear-gradient(-45deg, hsla(0, 0%, 50%, 0.1) 25%, transparent 0),
+    linear-gradient(45deg, transparent 75%, hsla(0, 0%, 50%, 0.1) 0),
+    linear-gradient(-45deg, transparent 75%, hsla(0, 0%, 50%, 0.1) 0);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 999px;
+}
