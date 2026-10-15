@@ -4,9 +4,7 @@ import { ChatSessionProvider } from "../shared/chatSession";
 
 const NAV = [
   { to: "/", label: "Home", end: true },
-  // { to: "/models", label: "Models", end: false },
   { to: "/chat", label: "Chat", end: false },
-  { to: "/settings", label: "Settings", end: false },
   { to: "/background", label: "Background", end: false },
 ];
 
