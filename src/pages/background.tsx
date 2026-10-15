@@ -78,15 +78,16 @@ function maskToCanvas(mask: any): HTMLCanvasElement {
 }
 
 type CutoutControls = {
-  /** Foreground opacity, in percent. 100 = full removal, 0 = untouched. */
-  intensity: number;
+  /** Mask cutoff, in percent. Everything at or below is forced to background, the rest is rescaled to full opacity. */
+  tolerance: number;
   /** Edge feather as a percentage of the longest edge. */
   feather: number;
-  /** Edge hardness. Pushes soft alpha towards fully opaque/transparent. */
-  contrast: number;
 };
 
-const DEFAULT_CONTROLS: CutoutControls = { intensity: 100, feather: 0, contrast: 0 };
+const DEFAULT_CONTROLS: CutoutControls = { tolerance: 0, feather: 0 };
+
+/** Confidence cutoff the segmentation pipeline uses to binarise the mask. */
+const DEFAULT_THRESHOLD = 0.5;
 
 /** Apply a grayscale mask to the original image as its alpha channel. */
 function compositeCutout(source: HTMLImageElement, mask: HTMLCanvasElement, controls: CutoutControls): HTMLCanvasElement {
@@ -116,13 +117,12 @@ function compositeCutout(source: HTMLImageElement, mask: HTMLCanvasElement, cont
   const pixels = outCtx.getImageData(0, 0, width, height);
   const maskPixels = scaledCtx.getImageData(0, 0, width, height);
 
-  const gain = controls.intensity / 100;
-  const contrast = 1 + (controls.contrast / 100) * 3; // 1 -> 4
+  const tolerance = controls.tolerance / 100; // 0 -> keep everything, 1 -> near-binary
 
   for (let i = 0; i < pixels.data.length; i += 4) {
     let a = (maskPixels.data[i] + maskPixels.data[i + 1] + maskPixels.data[i + 2]) / (3 * 255);
-    if (contrast !== 1) a = (a - 0.5) * contrast + 0.5;
-    a *= gain;
+    // Discard faint mask areas, then rescale so confident foreground stays fully opaque.
+    if (tolerance > 0) a = a <= tolerance ? 0 : (a - tolerance) / (1 - tolerance);
     pixels.data[i + 3] = a <= 0 ? 0 : a >= 1 ? 255 : Math.round(a * 255);
   }
   outCtx.putImageData(pixels, 0, 0);
@@ -181,6 +181,7 @@ export default function BackgroundPage() {
   const sourceImageRef = useRef<HTMLImageElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const controlsRef = useRef<CutoutControls>(DEFAULT_CONTROLS);
+  const thresholdRef = useRef(DEFAULT_THRESHOLD);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("loading");
   const [modelError, setModelError] = useState<string | null>(null);
@@ -197,9 +198,9 @@ export default function BackgroundPage() {
   const [compare, setCompare] = useState(50);
   const [dragging, setDragging] = useState(false);
 
-  const [intensity, setIntensity] = useState(DEFAULT_CONTROLS.intensity);
+  const [tolerance, setTolerance] = useState(DEFAULT_CONTROLS.tolerance);
   const [feather, setFeather] = useState(DEFAULT_CONTROLS.feather);
-  const [edgeContrast, setEdgeContrast] = useState(DEFAULT_CONTROLS.contrast);
+  const [modelThreshold, setModelThreshold] = useState(DEFAULT_THRESHOLD);
 
   const [storageLabel, setStorageLabel] = useState("—");
   const [storageDetail, setStorageDetail] = useState("");
@@ -281,8 +282,12 @@ export default function BackgroundPage() {
   // Keep the latest control values in a ref so the (stable) render callback can
   // read them without being recreated on every slider move.
   useEffect(() => {
-    controlsRef.current = { intensity, feather, contrast: edgeContrast };
-  }, [intensity, feather, edgeContrast]);
+    controlsRef.current = { tolerance, feather };
+  }, [tolerance, feather]);
+
+  useEffect(() => {
+    thresholdRef.current = modelThreshold;
+  }, [modelThreshold]);
 
   const renderCutout = useCallback(() => {
     const source = sourceImageRef.current;
@@ -298,12 +303,12 @@ export default function BackgroundPage() {
     if (!maskCanvasRef.current) return;
     const timer = window.setTimeout(renderCutout, 80);
     return () => window.clearTimeout(timer);
-  }, [intensity, feather, edgeContrast, renderCutout]);
+  }, [tolerance, feather, renderCutout]);
 
   const resetControls = useCallback(() => {
-    setIntensity(DEFAULT_CONTROLS.intensity);
+    setTolerance(DEFAULT_CONTROLS.tolerance);
     setFeather(DEFAULT_CONTROLS.feather);
-    setEdgeContrast(DEFAULT_CONTROLS.contrast);
+    setModelThreshold(DEFAULT_THRESHOLD);
   }, []);
 
   const runSegmentation = useCallback(
@@ -316,7 +321,7 @@ export default function BackgroundPage() {
 
       try {
         const input = resizeToCanvas(image);
-        const output = await generator(input, { threshold: 0.5 });
+        const output = await generator(input, { threshold: thresholdRef.current });
         if (!aliveRef.current) return;
         setPhase("compositing");
 
@@ -340,6 +345,14 @@ export default function BackgroundPage() {
     },
     [renderCutout],
   );
+
+  // The pipeline threshold changes the mask itself, so re-run inference (debounced).
+  useEffect(() => {
+    const image = sourceImageRef.current;
+    if (!image) return;
+    const timer = window.setTimeout(() => void runSegmentation(image), 350);
+    return () => window.clearTimeout(timer);
+  }, [modelThreshold, runSegmentation]);
 
   const acceptFile = useCallback(
     (file: File) => {
@@ -650,9 +663,9 @@ export default function BackgroundPage() {
                   </button>
                 </div>
                 <div className="grid grid-cols-1 gap-5">
-                  <Slider label="Intensity" value={intensity} onChange={setIntensity} min={0} max={150} suffix="%" hint="How strongly the background is stripped away." />
+                  <Slider label="Tolerance" value={tolerance} onChange={setTolerance} suffix="%" hint="Discard faint mask areas so the subject stays solid." />
                   <Slider label="Edge softness" value={feather} onChange={setFeather} suffix="%" hint="Feather the cut-out edge for a softer blend." />
-                  <Slider label="Edge contrast" value={edgeContrast} onChange={setEdgeContrast} suffix="%" hint="Harder edges - good for logos and crisp subjects." />
+                  <Slider label="Detection threshold" value={modelThreshold} onChange={setModelThreshold} min={0} max={1} step={0.05} hint="Model confidence cutoff - re-runs the model on change." />
                 </div>
               </div>
             ) : null}
