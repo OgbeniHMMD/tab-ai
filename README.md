@@ -27,7 +27,7 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-First run downloads a model (12 MB – ~1 GB depending on the chat model you pick).
+First run downloads a model (~12 MB – ~1.7 GB depending on the chat model you pick).
 After that it is served from cache and works offline.
 
 ### Scripts
@@ -51,7 +51,11 @@ Everything is client-side:
   `deviceMemory` and recommends a model.
 - **`src/shared/storage.ts`** — scoped cache management. It only ever deletes **our
   own** Cache Storage entries and IndexedDB databases (matched by name); it never
-  blanket-deletes the whole origin.
+  blanket-deletes the whole origin. It also exposes `probeModelCache()`, used by the
+  models page to tell whether a model's weights are already on disk: Cache Storage is
+  the authoritative signal (it reflects the actual bytes and stays correct after
+  "Clear model cache"), with a persisted `loaded:v1:<model>` `localStorage` flag as a
+  fallback when the Cache API is unavailable.
 - **`src/shared/ui/`** — small presentational pieces (`ProgressBar`, `DownloadCard`,
   `Badge`, `StatusPill`, `Footer`).
 - **`src/shared/styles/`** — design tokens as CSS variables, light/dark via
