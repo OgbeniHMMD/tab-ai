@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 
 import { MODELS, useChatSession, type Role } from "../shared/chatSession";
-import { Badge, StatusPill, type StatusKind } from "../shared/ui";
+import { Badge, Slider, StatusPill, type StatusKind } from "../shared/ui";
 
 /* -------------------------------------------------------------------------- */
 /*  Small pieces                                                              */
@@ -25,35 +25,34 @@ function Bubble({ role, content, streaming = false }: { role: Role; content: str
   );
 }
 
-interface SliderProps {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format?: (value: number) => string;
-  onChange: (value: number) => void;
-}
-
-function Slider({ label, value, min, max, step, format, onChange }: SliderProps) {
-  return (
-    <label className="block">
-      <span className="mono mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest text-[var(--text-faint)]">
-        <span>{label}</span>
-        <span className="text-[var(--text-muted)]">{format ? format(value) : value}</span>
-      </span>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full accent-[var(--text)]" />
-    </label>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Page                                                                      */
 /* -------------------------------------------------------------------------- */
 
 export default function ChatPage() {
-  const { modelId, ready, error, status, phase, messages, system, setSystem, settings, setSettings, resetSettings, input, setInput, streaming, busy, liveTps, send, stop, retry, newChat } =
-    useChatSession();
+  const {
+    modelId,
+    ready,
+    error,
+    status,
+    phase,
+    messages,
+    system,
+    setSystem,
+    settings,
+    setSettings,
+    resetSettings,
+    activeSkillIds,
+    input,
+    setInput,
+    streaming,
+    busy,
+    liveTps,
+    send,
+    stop,
+    retry,
+    newChat,
+  } = useChatSession();
 
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,12 +85,20 @@ export default function ChatPage() {
           <div className="flex items-center gap-2">
             <Badge tone="invert">{model.label}</Badge>
             <StatusPill status={pillStatus}>{pillLabel}</StatusPill>
+            {activeSkillIds.length > 0 ? (
+              <Badge tone="info">
+                {activeSkillIds.length} skill{activeSkillIds.length > 1 ? "s" : ""}
+              </Badge>
+            ) : null}
             {busy && liveTps != null ? <span className="mono text-[11px] text-[var(--text-muted)]">{liveTps.toFixed(1)} tok/s</span> : null}
             {busy && liveTps == null ? <span className="mono text-[11px] text-[var(--text-faint)]">thinking…</span> : null}
           </div>
           <div className="flex items-center gap-3">
             <Link to="/models" className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)] transition hover:text-[var(--text)]">
               Change
+            </Link>
+            <Link to="/settings" className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)] transition hover:text-[var(--text)]">
+              Settings
             </Link>
             <button
               onClick={newChat}

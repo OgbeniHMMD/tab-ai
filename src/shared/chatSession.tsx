@@ -5,6 +5,7 @@ import { TextStreamer, InterruptableStoppingCriteria } from "@huggingface/transf
 import { useCapabilities, recommendModel, type WebCapabilities } from "./capabilities";
 import { acquirePipeline, type AcquireHandle, type DownloadProgress } from "./modelLoader";
 import { readPref, writePref } from "./storage";
+import { BUILTIN_SKILLS, composeSystem, loadSkillsPref, saveSkillsPref, type Skill, type SkillsPref } from "./skills";
 
 /* -------------------------------------------------------------------------- */
 /*  Model catalog                                                             */
@@ -116,7 +117,7 @@ const SYSTEM_KEY = "chat:system:v1";
  * Rough token budget for the templated prompt. Oldest turns are dropped once the
  * conversation exceeds this, keeping generation inside small models' context.
  */
-const INPUT_TOKEN_BUDGET = 1536;
+export const INPUT_TOKEN_BUDGET = 1536;
 
 const roleLabel = (role: Role) => (role === "user" ? "User" : role === "assistant" ? "Assistant" : "System");
 
@@ -214,6 +215,24 @@ export interface ChatSessionValue {
   setSettings: Dispatch<SetStateAction<ChatSettings>>;
   resetSettings: () => void;
 
+  /* ---- prompts & skills ---- */
+  /** Built-in + user-authored skills, in display order. */
+  skills: Skill[];
+  /** Ids of the currently enabled skills. */
+  activeSkillIds: string[];
+  /** The system prompt actually sent: base system + enabled skill bodies. */
+  composedSystem: string;
+  /** Toggle a skill on/off. */
+  toggleSkill: (id: string) => void;
+  /** Add a new custom skill, or update an existing one in place. */
+  upsertSkill: (skill: Skill) => void;
+  /** Remove a custom skill (built-ins are ignored). */
+  removeSkill: (id: string) => void;
+  /** Disable all skills and delete all custom ones. */
+  resetSkills: () => void;
+  /** Count tokens with the live tokenizer, or a ~4-chars-per-token estimate. */
+  countTokens: (text: string) => number;
+
   /* ---- streaming ---- */
   input: string;
   setInput: (value: string) => void;
@@ -285,6 +304,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     ...DEFAULT_SETTINGS,
     ...(readPref<Partial<ChatSettings>>(SETTINGS_KEY) ?? {}),
   }));
+  const [skillsPref, setSkillsPref] = useState<SkillsPref>(() => loadSkillsPref());
 
   // Keep the latest values reachable from the (stable) async callbacks.
   useEffect(() => {
@@ -304,6 +324,38 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writePref(SETTINGS_KEY, settings);
   }, [settings]);
+
+  // Skills: built-ins first, then custom ones (persisted separately from settings).
+  const skills = useMemo<Skill[]>(() => [...BUILTIN_SKILLS, ...skillsPref.custom], [skillsPref.custom]);
+  const activeSkillIds = useMemo(() => skillsPref.enabled.filter((id) => skills.some((s) => s.id === id)), [skillsPref.enabled, skills]);
+  const composedSystem = useMemo(
+    () =>
+      composeSystem(
+        system,
+        skills.filter((s) => activeSkillIds.includes(s.id)),
+      ),
+    [system, skills, activeSkillIds],
+  );
+  useEffect(() => {
+    saveSkillsPref(skillsPref);
+  }, [skillsPref]);
+
+  /**
+   * Token count for a string, using the live tokenizer when a model is warm and
+   * a ~4-chars-per-token estimate otherwise (mirrors `countTokens` above).
+   * Stable identity, so it's safe in the memoized context value.
+   */
+  const measureTokens = useCallback((text: string): number => {
+    const tokenizer = generatorRef.current?.tokenizer;
+    if (tokenizer && typeof tokenizer.encode === "function") {
+      try {
+        return tokenizer.encode(text).length;
+      } catch {
+        /* fall through to the estimate */
+      }
+    }
+    return Math.ceil(text.length / 4);
+  }, []);
 
   // Flip the liveness flag + clear the idle timer when the provider goes away.
   useEffect(() => {
@@ -503,7 +555,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     if (!aliveRef.current) return;
 
     const history = messages;
-    const turns = fitHistory(generator.tokenizer, system, history, text);
+    const turns = fitHistory(generator.tokenizer, composedSystem, history, text);
     const isCold = !warmRef.current.has(modelId);
 
     setMessages([...history, { role: "user", content: text }]);
@@ -539,7 +591,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         },
       });
 
-      const promptText = buildPrompt(generator.tokenizer, system, turns);
+      const promptText = buildPrompt(generator.tokenizer, composedSystem, turns);
 
       await generator(promptText, {
         max_new_tokens: settings.maxNewTokens,
@@ -570,9 +622,37 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       stopperRef.current = null;
       armIdle();
     }
-  }, [input, busy, modelId, messages, system, settings, ensureLoaded, clearIdle, armIdle]);
+  }, [input, busy, modelId, messages, composedSystem, settings, ensureLoaded, clearIdle, armIdle]);
 
   const resetSettings = useCallback(() => setSettings(DEFAULT_SETTINGS), []);
+
+  /* ------------------------------- skills --------------------------------- */
+
+  const toggleSkill = useCallback((id: string) => {
+    setSkillsPref((prev) => ({
+      ...prev,
+      enabled: prev.enabled.includes(id) ? prev.enabled.filter((x) => x !== id) : [...prev.enabled, id],
+    }));
+  }, []);
+
+  const upsertSkill = useCallback((skill: Skill) => {
+    setSkillsPref((prev) => {
+      const exists = prev.custom.some((s) => s.id === skill.id);
+      return {
+        ...prev,
+        custom: exists ? prev.custom.map((s) => (s.id === skill.id ? skill : s)) : [...prev.custom, skill],
+      };
+    });
+  }, []);
+
+  const removeSkill = useCallback((id: string) => {
+    setSkillsPref((prev) => ({
+      enabled: prev.enabled.filter((x) => x !== id),
+      custom: prev.custom.filter((s) => s.id !== id),
+    }));
+  }, []);
+
+  const resetSkills = useCallback(() => setSkillsPref({ enabled: [], custom: [] }), []);
 
   const value = useMemo<ChatSessionValue>(
     () => ({
@@ -594,6 +674,14 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       settings,
       setSettings,
       resetSettings,
+      skills,
+      activeSkillIds,
+      composedSystem,
+      toggleSkill,
+      upsertSkill,
+      removeSkill,
+      resetSkills,
+      countTokens: measureTokens,
       input,
       setInput,
       streaming,
@@ -619,6 +707,14 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       system,
       settings,
       resetSettings,
+      skills,
+      activeSkillIds,
+      composedSystem,
+      toggleSkill,
+      upsertSkill,
+      removeSkill,
+      resetSkills,
+      measureTokens,
       input,
       streaming,
       busy,
