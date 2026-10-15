@@ -608,7 +608,7 @@ export default function BackgroundPage() {
                 <div className="checker absolute inset-0 opacity-[0.7]" />
                 <div className="absolute inset-0">{originalUrl ? <img src={originalUrl} alt="original" className="h-full w-full object-contain" draggable={false} /> : null}</div>
                 {cutoutUrl ? (
-                  <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}>
+                  <div className="absolute inset-0 bg-[#fafaf8] dark:bg-[#121214]" style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}>
                     <div className="checker absolute inset-0" />
                     <img src={cutoutUrl} alt="cutout" className="relative h-full w-full object-contain" draggable={false} />
                   </div>
