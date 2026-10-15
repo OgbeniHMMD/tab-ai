@@ -24,7 +24,7 @@ export interface WebCapabilities {
 }
 
 /** Chat model used when the device is modest or WebGPU is unavailable. */
-export const CHAT_FALLBACK_MODEL = "onnx-community/SmolLM2-135M-Instruct";
+export const CHAT_FALLBACK_MODEL = "onnx-community/SmolLM2-135M-Instruct-ONNX";
 /** Chat model used on capable desktops. */
 export const CHAT_DESKTOP_MODEL = "onnx-community/Qwen2.5-0.5B-Instruct";
 
