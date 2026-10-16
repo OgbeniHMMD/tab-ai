@@ -37,9 +37,9 @@ export const DEFAULT_SKILLS_PREF: SkillsPref = { enabled: [], custom: [] };
  * budget as the conversation (see `INPUT_TOKEN_BUDGET`), so every line here
  * costs context that would otherwise be chat memory.
  *
- * Because the base system prompt is empty by default, a skill body is often the
- * *only* instruction the model sees, and skills are toggled independently. So
- * each body carries its own short honesty clause, and they are written as short
+ * Skills are toggled independently and the base prompt defaults to empty, so
+ * each body assumes {@link BASELINE_SYSTEM} has already supplied the universal
+ * honesty fallback and focuses only on its task. They are written as short
  * positive directives (small models follow "state X" far more reliably than
  * "do not do Y").
  */
@@ -48,35 +48,35 @@ export const BUILTIN_SKILLS: Skill[] = [
     id: "concise",
     name: "Concise",
     description: "Short, direct answers. No preamble.",
-    body: `Answer in as few words as needed: no preamble, no restating the question. Ground every claim in the conversation or in facts you are confident about, and say "I don't know" when information is missing instead of guessing.`,
+    body: `Use as few words as possible. Start with the answer.`,
     builtin: true,
   },
   {
     id: "tutor",
     name: "Tutor",
     description: "Explain step by step for a beginner.",
-    body: `Teach step by step for a beginner: define each new term the first time you use it, then give one short, concrete example. Explain only what you are confident is correct, and say "I don't know" rather than inventing details.`,
+    body: `Teach a beginner. Define each new term the first time you use it. Then give one short example.`,
     builtin: true,
   },
   {
     id: "structured",
     name: "Structured",
     description: "Organize answers with headings and bullets.",
-    body: `Start with a one-line summary, then short bullet points. Use headings only when the answer has several parts. Keep each point to one fact you are confident about, and flag anything you are unsure of.`,
+    body: `Start with one summary line. Then use short bullet points. Put one fact in each point.`,
     builtin: true,
   },
   {
     id: "code",
     name: "Code helper",
     description: "Answer with runnable code first.",
-    body: `When asked for code, give one self-contained, runnable snippet first, then a short bullet list of what it does, how to run it, and any caveats. Use only real, documented APIs and standard-library calls; if you are unsure whether a function, flag, or option exists, say so rather than inventing one.`,
+    body: `Give one small, complete code sample first. Then list how to run it.`,
     builtin: true,
   },
   {
     id: "socratic",
     name: "Socratic",
     description: "Guide with questions instead of answers.",
-    body: `Do not give the answer. Ask one focused question at a time, each grounded in what the user just said, so they can reach it themselves. Keep each question short.`,
+    body: `Do not give the answer. Ask one short question at a time. Base each question on what the user just said.`,
     builtin: true,
   },
 ];
@@ -117,7 +117,7 @@ export function saveSkillsPref(pref: SkillsPref): void {
  * before the base prompt) because small models weight the start of the system
  * message most. Kept short: it shares the 1536-token input budget with chat.
  */
-export const BASELINE_SYSTEM = ``;
+export const BASELINE_SYSTEM = `If you are not sure, say "I don't know".`;
 
 /**
  * Compose the final system prompt: the baseline honesty instruction, then the
