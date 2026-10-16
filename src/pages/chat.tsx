@@ -6,6 +6,7 @@ import { MODELS, useChatSession, type Role } from "../shared/chatSession";
 import { conversationToText, formatTimestamp, type Conversation } from "../shared/conversations";
 import { COMMANDS, PROMPTS } from "../shared/prompts";
 import { Badge, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
+import { SettingsPanel } from "../components/SettingsPanel";
 
 /* -------------------------------------------------------------------------- */
 /*  Icons                                                                     */
@@ -62,6 +63,12 @@ const SendIcon = () => (
   <svg {...iconProps}>
     <path d="M22 2 11 13" />
     <path d="M22 2 15 22l-4-9-9-4Z" />
+  </svg>
+);
+const GearIcon = () => (
+  <svg {...iconProps}>
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 
@@ -184,6 +191,7 @@ export default function ChatPage() {
   const cardRef = useRef<HTMLDivElement | null>(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   // `null` = closed; otherwise which field the edit dialog should focus.
   const [editor, setEditor] = useState<null | "title" | "system">(null);
@@ -210,6 +218,16 @@ export default function ChatPage() {
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+
+  // Escape closes the settings drawer.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setSettingsOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
 
   /* ------------------------------ palette ---------------------------------- */
 
@@ -238,7 +256,7 @@ export default function ChatPage() {
       rename: () => setEditor("title"),
       system: () => setEditor("system"),
       models: () => navigate("/models"),
-      settings: () => navigate("/settings"),
+      settings: () => setSettingsOpen(true),
       stop: () => stop(),
     };
     return (name: string) => {
@@ -367,12 +385,16 @@ export default function ChatPage() {
             >
               / Prompts
             </button>
-            <Link
-              to="/settings"
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsOpen(true);
+                setSidebarOpen(false);
+              }}
               className="mono flex-1 rounded-[11px] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-center text-[11px] tracking-wide text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
             >
               Settings
-            </Link>
+            </button>
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
@@ -463,6 +485,15 @@ export default function ChatPage() {
               </Link>
               <button
                 type="button"
+                onClick={() => setSettingsOpen(true)}
+                aria-label="Open settings"
+                title="Settings"
+                className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+              >
+                <GearIcon />
+              </button>
+              <button
+                type="button"
                 onClick={onToggleFullscreen}
                 aria-label="Toggle fullscreen"
                 title="Fullscreen"
@@ -524,7 +555,7 @@ export default function ChatPage() {
           <section className="shrink-0 border-t border-[var(--border)] px-4 py-3.5 md:px-6 md:py-4">
             <div className="mx-auto max-w-[760px]">
               {palette && paletteItems.length > 0 ? (
-                <div className="mb-2 max-h-[260px] overflow-y-auto rounded-[14px] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-lg">
+                <div className="mb-2 max-h-[260px] overflow-y-auto rounded-[14px] border border-[var(--border)] bg-[var(--bg-soft)] p-1.5 shadow-lg">
                   <div className="mono px-2.5 py-1.5 text-[10px] uppercase tracking-widest text-[var(--text-faint)]">{palette.kind === "prompt" ? "Prompts" : "Commands"}</div>
                   {paletteItems.map((item, i) => (
                     <button
@@ -615,6 +646,31 @@ export default function ChatPage() {
           </section>
         </div>
 
+        {/* Settings drawer — rendered in-page so settings never navigates away. */}
+        {settingsOpen ? (
+          <>
+            <div className="absolute inset-0 z-20 bg-black/20" onClick={() => setSettingsOpen(false)} />
+            <aside className="absolute inset-y-0 right-0 z-30 flex w-[420px] max-w-full flex-col border-l border-[var(--border)] bg-[var(--bg-soft)] shadow-2xl">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
+                <div className="min-w-0">
+                  <div className="text-[16px] font-[600] tracking-[-0.02em]">Settings</div>
+                  <div className="mono mt-0.5 text-[10px] uppercase tracking-widest text-[var(--text-faint)]">Stored locally · applied next message</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="mono shrink-0 rounded-full border border-[var(--border)] px-3 py-1 text-[10px] uppercase tracking-widest text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+                <SettingsPanel />
+              </div>
+            </aside>
+          </>
+        ) : null}
+
         {/* Edit dialog */}
         {editor && conversation ? (
           <EditConversationDialog
@@ -676,7 +732,7 @@ function EditConversationDialog({
 
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
-      <div className="w-full max-w-[520px] rounded-[18px] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-[520px] rounded-[18px] border border-[var(--border)] bg-[var(--bg-soft)] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="mono mb-4 text-[10px] uppercase tracking-widest text-[var(--text-faint)]">Edit conversation</div>
 
         <label className="block">
