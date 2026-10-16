@@ -6,6 +6,7 @@ import { useCapabilities, recommendModel, type WebCapabilities } from "./capabil
 import { acquirePipeline, type AcquireHandle, type DownloadProgress } from "./modelLoader";
 import { readPref, writePref } from "./storage";
 import { BUILTIN_SKILLS, composeSystem, loadSkillsPref, saveSkillsPref, type Skill, type SkillsPref } from "./skills";
+import { createConversation, deleteConversationRecord, deriveTitle, loadConversations, saveConversations, DEFAULT_TITLE, type Conversation } from "./conversations";
 
 /* -------------------------------------------------------------------------- */
 /*  Model catalog                                                             */
@@ -95,6 +96,9 @@ export interface ChatMessage {
   role: Role;
   content: string;
 }
+
+/** Stable empty array so `messages` keeps a consistent identity when no chat exists. */
+const EMPTY_MESSAGES: ChatMessage[] = [];
 
 export interface ChatSettings {
   temperature: number;
@@ -213,9 +217,30 @@ export interface ChatSessionValue {
   retry: () => void;
 
   /* ---- conversation ---- */
+  /** Messages of the active conversation (empty until one exists). */
   messages: ChatMessage[];
+  /** The app-wide base system prompt (edited on the settings page). */
   system: string;
   setSystem: (value: string) => void;
+  /** Every conversation, newest first. Backs the sidebar. */
+  conversations: Conversation[];
+  /** The conversation currently open in the transcript, or `null` while loading. */
+  conversation: Conversation | null;
+  /** The active conversation's own system prompt (the "System Prompt" bubble). */
+  conversationSystem: string;
+  setConversationSystem: (value: string) => void;
+  /** Create a fresh conversation and select it. */
+  newChat: () => void;
+  /** Open an existing conversation. */
+  selectConversation: (id: string) => void;
+  /** Rename a conversation (does not reorder the list). */
+  renameConversation: (id: string, title: string) => void;
+  /** Delete a conversation; the list always keeps at least one. */
+  deleteConversation: (id: string) => void;
+  /** Drop every message in the active conversation. */
+  clearMessages: () => void;
+  /** True once stored conversations have been read back from IndexedDB. */
+  hydrated: boolean;
   settings: ChatSettings;
   setSettings: Dispatch<SetStateAction<ChatSettings>>;
   resetSettings: () => void;
@@ -246,7 +271,6 @@ export interface ChatSessionValue {
   liveTps: number | null;
   send: () => void;
   stop: () => void;
-  newChat: () => void;
 }
 
 const ChatSessionContext = createContext<ChatSessionValue | null>(null);
@@ -288,6 +312,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   const stopperRef = useRef<InterruptableStoppingCriteria | null>(null);
   const busyRef = useRef(false);
   const idleTimerRef = useRef<number | null>(null);
+  /** The active conversation id, reachable from stable async callbacks. */
+  const activeIdRef = useRef<string | null>(null);
 
   const [modelId, setModelId] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -297,7 +323,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState("");
   const [busy, setBusy] = useState(false);
@@ -322,6 +350,55 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     busyRef.current = busy;
   }, [busy]);
 
+  // Keep the active conversation id reachable from the stable `send`/`stop` callbacks.
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+
+  /* --------------------------- conversation store -------------------------- */
+
+  // Hydrate from IndexedDB once on mount, seeding a first conversation when
+  // there's nothing stored yet. The app-wide base prompt stays in Settings and
+  // composes on top of each conversation's own prompt, so we start empty here.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const stored = await loadConversations();
+      if (cancelled || !aliveRef.current) return;
+      if (stored.length > 0) {
+        setConversations(stored);
+        setActiveId(stored[0].id);
+      } else {
+        const first = createConversation();
+        setConversations([first]);
+        setActiveId(first.id);
+      }
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const conversation = useMemo(() => conversations.find((c) => c.id === activeId) ?? null, [conversations, activeId]);
+  const messages = conversation?.messages ?? EMPTY_MESSAGES;
+  const conversationSystem = conversation?.system ?? "";
+
+  // If the active id goes stale (deleted, or not chosen yet), fall back to the
+  // newest conversation. The list is non-empty once hydrated.
+  useEffect(() => {
+    if (!hydrated || conversations.length === 0) return;
+    if (!activeId || !conversations.some((c) => c.id === activeId)) setActiveId(conversations[0].id);
+  }, [hydrated, conversations, activeId]);
+
+  // Debounced write-through: coalesces a burst of edits (typing a system prompt)
+  // into a single IndexedDB transaction.
+  useEffect(() => {
+    if (!hydrated) return;
+    const handle = window.setTimeout(() => void saveConversations(conversations), 300);
+    return () => window.clearTimeout(handle);
+  }, [conversations, hydrated]);
+
   // Persist system prompt + generation settings.
   useEffect(() => {
     writePref(SYSTEM_KEY, system);
@@ -338,8 +415,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       composeSystem(
         system,
         skills.filter((s) => activeSkillIds.includes(s.id)),
+        conversationSystem,
       ),
-    [system, skills, activeSkillIds],
+    [system, skills, activeSkillIds, conversationSystem],
   );
   useEffect(() => {
     saveSkillsPref(skillsPref);
@@ -523,7 +601,6 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
       setModelId(id);
-      setMessages([]);
       setStreaming("");
       setInput("");
     },
@@ -532,10 +609,59 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
   const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
 
+  /* ------------------------------ conversations ---------------------------- */
+
+  // Patch one conversation by id. A no-op if it was deleted mid-flight.
+  const updateConversation = useCallback((id: string, fn: (c: Conversation) => Conversation) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? fn(c) : c)));
+  }, []);
+
   const newChat = useCallback(() => {
-    setMessages([]);
+    if (busyRef.current) return; // don't strand an in-flight generation
+    const conv = createConversation();
+    setConversations((prev) => [conv, ...prev]);
+    setActiveId(conv.id);
     setStreaming("");
     setInput("");
+  }, []);
+
+  const selectConversation = useCallback((id: string) => {
+    if (busyRef.current) return;
+    setActiveId(id);
+    setStreaming("");
+    setInput("");
+  }, []);
+
+  const renameConversation = useCallback(
+    (id: string, title: string) => {
+      updateConversation(id, (c) => ({ ...c, title: title.trim() || DEFAULT_TITLE }));
+    },
+    [updateConversation],
+  );
+
+  const setConversationSystem = useCallback(
+    (value: string) => {
+      const id = activeIdRef.current;
+      if (id) updateConversation(id, (c) => ({ ...c, system: value }));
+    },
+    [updateConversation],
+  );
+
+  const clearMessages = useCallback(() => {
+    const id = activeIdRef.current;
+    if (id) updateConversation(id, (c) => ({ ...c, messages: [], updatedAt: Date.now() }));
+  }, [updateConversation]);
+
+  const deleteConversation = useCallback((id: string) => {
+    if (busyRef.current) return; // don't delete out from under a live generation
+    void deleteConversationRecord(id);
+    setConversations((prev) => {
+      const next = prev.filter((c) => c.id !== id);
+      return next.length > 0 ? next : [createConversation()];
+    });
+    // If the open chat was removed, drop the selection; the repair effect picks
+    // the newest remaining conversation on the next render.
+    setActiveId((prev) => (prev === id ? null : prev));
   }, []);
 
   const stop = useCallback(() => stopperRef.current?.interrupt(), []);
@@ -544,7 +670,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || busy || !modelId) return;
+    const convId = activeIdRef.current;
+    if (!text || busy || !modelId || !convId) return;
 
     // Don't let the idle timer fire while we wait on a reload / generation.
     clearIdle();
@@ -563,7 +690,17 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     const turns = fitHistory(generator.tokenizer, composedSystem, history, text);
     const isCold = !warmRef.current.has(modelId);
 
-    setMessages([...history, { role: "user", content: text }]);
+    // Append the user turn immediately (auto-titling on the first one), then
+    // stream the reply into a transient buffer until it completes.
+    updateConversation(convId, (c) => {
+      const nextMessages: ChatMessage[] = [...c.messages, { role: "user", content: text }];
+      return {
+        ...c,
+        messages: nextMessages,
+        title: c.title === DEFAULT_TITLE ? deriveTitle(nextMessages) : c.title,
+        updatedAt: Date.now(),
+      };
+    });
     setInput("");
     setBusy(true);
     setStreaming("");
@@ -620,7 +757,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     } finally {
       if (aliveRef.current) {
         const content = failure ? (acc ? `${acc}\n\n[error: ${failure}]` : `Error: ${failure}`) : acc;
-        if (content.trim()) setMessages((prev) => [...prev, { role: "assistant", content }]);
+        if (content.trim()) updateConversation(convId, (c) => ({ ...c, messages: [...c.messages, { role: "assistant", content }], updatedAt: Date.now() }));
         setStreaming("");
         setLiveTps(null);
         setBusy(false);
@@ -628,7 +765,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       stopperRef.current = null;
       armIdle();
     }
-  }, [input, busy, modelId, messages, composedSystem, settings, ensureLoaded, clearIdle, armIdle]);
+  }, [input, busy, modelId, messages, composedSystem, settings, ensureLoaded, clearIdle, armIdle, updateConversation]);
 
   const resetSettings = useCallback(() => setSettings(DEFAULT_SETTINGS), []);
 
@@ -677,6 +814,16 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       messages,
       system,
       setSystem,
+      conversations,
+      conversation,
+      conversationSystem,
+      setConversationSystem,
+      newChat,
+      selectConversation,
+      renameConversation,
+      deleteConversation,
+      clearMessages,
+      hydrated,
       settings,
       setSettings,
       resetSettings,
@@ -695,7 +842,6 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       liveTps,
       send: () => void send(),
       stop,
-      newChat,
     }),
     [
       caps,
@@ -711,6 +857,16 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       retry,
       messages,
       system,
+      conversations,
+      conversation,
+      conversationSystem,
+      setConversationSystem,
+      newChat,
+      selectConversation,
+      renameConversation,
+      deleteConversation,
+      clearMessages,
+      hydrated,
       settings,
       resetSettings,
       skills,
@@ -727,7 +883,6 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       liveTps,
       send,
       stop,
-      newChat,
     ],
   );
 

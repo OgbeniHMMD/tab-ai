@@ -121,11 +121,13 @@ export const BASELINE_SYSTEM = `If you are not sure, say "I don't know".`;
 
 /**
  * Compose the final system prompt: the baseline honesty instruction, then the
- * user's base prompt, then the active skills in the order given. Empty pieces
- * are dropped so we never emit stray blank sections.
+ * app-wide base prompt, then this conversation's own system prompt, then the
+ * active skills in the order given. Empty pieces are dropped so we never emit
+ * stray blank sections.
  */
-export function composeSystem(base: string, active: Skill[]): string {
+export function composeSystem(base: string, active: Skill[], conversationSystem = ""): string {
   const trimmedBase = base.trim();
+  const trimmedConvo = conversationSystem.trim();
   const blocks = active.map((s) => s.body.trim()).filter(Boolean);
-  return [BASELINE_SYSTEM, trimmedBase, ...blocks].filter(Boolean).join("\n\n");
+  return [BASELINE_SYSTEM, trimmedBase, trimmedConvo, ...blocks].filter(Boolean).join("\n\n");
 }

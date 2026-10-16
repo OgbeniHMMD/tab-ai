@@ -8,11 +8,11 @@ Built with **Vite + React + TypeScript + Tailwind CSS v4 + Transformers.js**.
 
 ## Tools
 
-| Route         | What it does                                                                |
-| ------------- | --------------------------------------------------------------------------- |
-| `/`           | Hub linking to the two tools.                                               |
-| `/background` | On-device image background removal with **MODNet** → transparent PNG.       |
-| `/chat`       | Run a tiny LLM (SmolLM2 / Qwen2.5 / DistilGPT-2) in the browser, streaming. |
+| Route         | What it does                                                                                                                             |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`           | Hub linking to the two tools.                                                                                                            |
+| `/background` | On-device image background removal with **MODNet** → transparent PNG.                                                                    |
+| `/chat`       | Multi-conversation chat with a tiny LLM (SmolLM2 / Qwen2.5 / DistilGPT-2), streaming, with a prompt library and per-chat system prompts. |
 
 ## Requirements
 
@@ -56,6 +56,14 @@ Everything is client-side:
   the authoritative signal (it reflects the actual bytes and stays correct after
   "Clear model cache"), with a persisted `loaded:v1:<model>` `localStorage` flag as a
   fallback when the Cache API is unavailable.
+- **`src/shared/chatSession.tsx`** — the app-wide chat provider (mounted in `Layout`
+  so the loaded pipeline survives route changes). Owns the model lifecycle, the
+  conversation store, generation settings, and the skill/prompt library.
+- **`src/shared/conversations.ts`** — the multi-chat model + IndexedDB persistence.
+  Conversations live in their own `tabai-chat` database, deliberately outside the
+  `transformers|onnx` pattern that "Clear model cache" removes.
+- **`src/shared/skills.ts`** — toggleable instruction blocks composed into the system
+  prompt. **`src/shared/prompts.ts`** — the `/` prompt library and `;` command palette.
 - **`src/shared/ui/`** — small presentational pieces (`ProgressBar`, `DownloadCard`,
   `Badge`, `StatusPill`, `Footer`).
 - **`src/shared/styles/`** — design tokens as CSS variables, light/dark via
@@ -176,6 +184,10 @@ src/
     modelLoader.ts    # cached pipeline loader + download progress
     capabilities.ts   # WebGPU / device probing + model recommendation
     storage.ts        # scoped cache + IndexedDB clearing
+    chatSession.tsx   # chat provider: model lifecycle, conversations, skills
+    conversations.ts  # conversation model + IndexedDB persistence
+    skills.ts         # toggleable system-prompt blocks
+    prompts.ts        # `/` prompts + `;` commands
     styles/
       index.css       # @import "tailwindcss"; + tokens
       tokens.css      # design tokens (light/dark via prefers-color-scheme)
