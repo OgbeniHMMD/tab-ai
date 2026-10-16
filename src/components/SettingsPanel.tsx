@@ -144,9 +144,9 @@ function SkillEditor({ initial, onSave, onCancel }: { initial: Skill | null; onS
 /* -------------------------------------------------------------------------- */
 
 /**
- * The settings body, shared by the standalone `/settings` page and the in-chat
- * drawer. It deliberately contains no page chrome or navigation links, so it can
- * be embedded anywhere without routing the user away.
+ * The settings body, rendered in the in-chat drawer. It deliberately contains no
+ * page chrome or navigation links, so it can be embedded anywhere without
+ * routing the user away.
  */
 export function SettingsPanel() {
   const { system, setSystem, skills, activeSkillIds, composedSystem, toggleSkill, upsertSkill, removeSkill, resetSkills, countTokens, settings, setSettings, resetSettings } = useChatSession();
