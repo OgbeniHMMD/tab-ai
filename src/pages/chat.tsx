@@ -115,12 +115,12 @@ function Bubble({ role, content, streaming = false }: { role: Role; content: str
 function ConversationRow({ conv, active, onSelect, onDelete }: { conv: Conversation; active: boolean; onSelect: () => void; onDelete: () => void }) {
   return (
     <div
-      className={`group relative w-full rounded-[14px] border px-3.5 py-3 text-left transition ${
+      className={`relative w-full rounded-[14px] border px-3.5 py-3 text-left transition ${
         active ? "border-[var(--text)] bg-[var(--surface)] shadow-[0_1px_0_rgba(0,0,0,0.03)]" : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)]"
       }`}
     >
       <button type="button" onClick={onSelect} className="block w-full text-left">
-        <div className="truncate pr-6 text-[13.5px] font-[550] tracking-[-0.01em] text-[var(--text)]">{conv.title}</div>
+        <div className="truncate pr-8 text-[13.5px] font-[550] tracking-[-0.01em] text-[var(--text)]">{conv.title}</div>
         <div className="mt-1 flex items-center justify-between gap-2">
           <span className="mono text-[10.5px] text-[var(--text-faint)]">
             {conv.messages.length} message{conv.messages.length === 1 ? "" : "s"}
@@ -136,7 +136,7 @@ function ConversationRow({ conv, active, onSelect, onDelete }: { conv: Conversat
         }}
         aria-label="Delete conversation"
         title="Delete conversation"
-        className="absolute right-2 top-2.5 hidden rounded-full p-1 text-[var(--text-faint)] transition hover:bg-[var(--bg-soft)] hover:text-red-600 group-hover:block dark:hover:text-red-400"
+        className="absolute right-2 top-2.5 rounded-full p-1 text-[var(--text-faint)] transition hover:bg-[var(--bg-soft)] hover:text-red-600 dark:hover:text-red-400"
       >
         <TrashIcon />
       </button>
