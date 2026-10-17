@@ -33,9 +33,9 @@ export const USER_SKILLS_KEY = "chat:skills:v1";
 export const DEFAULT_SKILLS_PREF: SkillsPref = { enabled: [], custom: [] };
 
 /**
- * Built-in skills. Deliberately terse: these share the same 1536-token input
- * budget as the conversation (see `INPUT_TOKEN_BUDGET`), so every line here
- * costs context that would otherwise be chat memory.
+ * Built-in skills. Deliberately terse: these share the model-derived input
+ * token budget with the conversation (see `inputTokenBudget`), so every line
+ * here costs context that would otherwise be chat memory.
  *
  * Skills are toggled independently and the base prompt defaults to empty, so
  * each body assumes {@link BASELINE_SYSTEM} has already supplied the universal
@@ -115,7 +115,7 @@ export function saveSkillsPref(pref: SkillsPref): void {
  * independently and the base prompt defaults to empty, so without this a user
  * could end up giving the model no instructions at all. Front-loaded (it comes
  * before the base prompt) because small models weight the start of the system
- * message most. Kept short: it shares the 1536-token input budget with chat.
+ * message most. Kept short: it shares the model-derived input budget with chat.
  */
 export const BASELINE_SYSTEM = `If you are not sure, say "I don't know".`;
 

@@ -21,6 +21,11 @@ export interface ChatModel {
   wasmSize: string;
   kind: "base" | "instruct";
   /**
+   * The model's trained context window, in tokens. Used to derive the input
+   * token budget so a prompt plus its reply never overruns the window.
+   */
+  contextLength: number;
+  /**
    * dtype to request on WebGPU. `q4` is the safe default; `q4f16` halves the
    * weights and is required for ~1B+ models that would otherwise exceed WebGPU
    * buffer limits, but it needs the `shader-f16` feature.
@@ -50,6 +55,7 @@ export const MODELS: ChatModel[] = [
     size: "~329 MB (q4)",
     wasmSize: "~329 MB (q4)",
     kind: "base",
+    contextLength: 1024,
     webgpuDtype: "q4",
     wasmCapable: true,
     note: "Raw LM — continues text. Smallest & fastest.",
@@ -60,6 +66,7 @@ export const MODELS: ChatModel[] = [
     size: "~181 MB (q4)",
     wasmSize: "~181 MB (q4)",
     kind: "instruct",
+    contextLength: 8192,
     webgpuDtype: "q4",
     wasmCapable: true,
     note: "Follows instructions. Good on low-end devices.",
@@ -70,6 +77,7 @@ export const MODELS: ChatModel[] = [
     size: "~386 MB (q4)",
     wasmSize: "~386 MB (q4)",
     kind: "instruct",
+    contextLength: 8192,
     webgpuDtype: "q4",
     wasmCapable: true,
     note: "A step up from 135M — still light enough for WASM.",
@@ -80,6 +88,7 @@ export const MODELS: ChatModel[] = [
     size: "~786 MB (q4)",
     wasmSize: "~786 MB (q4)",
     kind: "instruct",
+    contextLength: 32768,
     webgpuDtype: "q4",
     wasmCapable: true,
     note: "Better reasoning. Best with WebGPU.",
@@ -90,6 +99,7 @@ export const MODELS: ChatModel[] = [
     size: "~1.2 GB (q4f16)",
     wasmSize: "~1.8 GB (q4)",
     kind: "instruct",
+    contextLength: 32768,
     webgpuDtype: "q4f16",
     wasmCapable: false,
     note: "Noticeably smarter. Requires WebGPU.",
@@ -187,10 +197,27 @@ const SETTINGS_KEY = "chat:settings:v1";
 const SYSTEM_KEY = "chat:system:v1";
 
 /**
- * Rough token budget for the templated prompt. Oldest turns are dropped once the
- * conversation exceeds this, keeping generation inside small models' context.
+ * Upper bound on the input budget regardless of how large the model's window is.
+ * Past this, extra history mostly adds latency and cost without improving small
+ * on-device models' answers.
  */
-export const INPUT_TOKEN_BUDGET = 1536;
+export const MAX_INPUT_TOKEN_BUDGET = 4096;
+
+/** Always allow at least the system prompt plus the newest user turn. */
+export const MIN_INPUT_TOKEN_BUDGET = 256;
+
+/** Headroom for chat-template scaffolding the token count may under-report. */
+export const INPUT_TOKEN_MARGIN = 64;
+
+/**
+ * Input-token budget derived from the model's context window, reserving room for
+ * the reply so prompt + generation stays inside it. Clamped so a tiny window
+ * (or a very large `maxNewTokens`) can't produce a nonsensical budget.
+ */
+export function inputTokenBudget(contextLength: number, maxNewTokens: number): number {
+  const available = contextLength - maxNewTokens - INPUT_TOKEN_MARGIN;
+  return Math.max(MIN_INPUT_TOKEN_BUDGET, Math.min(MAX_INPUT_TOKEN_BUDGET, available));
+}
 
 const roleLabel = (role: Role) => (role === "user" ? "User" : role === "assistant" ? "Assistant" : "System");
 
@@ -225,10 +252,10 @@ function countTokens(tokenizer: TextGenerator["tokenizer"], text: string): numbe
   return Math.ceil(text.length / 4);
 }
 
-/** Trim the oldest turns until the templated prompt fits the input budget. */
-function fitHistory(tokenizer: TextGenerator["tokenizer"], system: string, history: ChatMessage[], userText: string): ChatMessage[] {
+/** Trim the oldest turns until the templated prompt fits `budget`. */
+function fitHistory(tokenizer: TextGenerator["tokenizer"], system: string, history: ChatMessage[], userText: string, budget: number): ChatMessage[] {
   const convo: ChatMessage[] = [...history, { role: "user", content: userText }];
-  while (convo.length > 1 && countTokens(tokenizer, buildPrompt(tokenizer, system, convo)) > INPUT_TOKEN_BUDGET) {
+  while (convo.length > 1 && countTokens(tokenizer, buildPrompt(tokenizer, system, convo)) > budget) {
     convo.shift();
   }
   return convo;
@@ -326,6 +353,11 @@ export interface ChatSessionValue {
   resetSkills: () => void;
   /** Count tokens with the live tokenizer, or a ~4-chars-per-token estimate. */
   countTokens: (text: string) => number;
+  /**
+   * Input-token budget for the active model (or the recommended one before a
+   * model is picked). Derived from its context window and `maxNewTokens`.
+   */
+  inputBudget: number;
 
   /* ---- streaming ---- */
   input: string;
@@ -402,6 +434,11 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     ...(readPref<Partial<ChatSettings>>(SETTINGS_KEY) ?? {}),
   }));
   const [skillsPref, setSkillsPref] = useState<SkillsPref>(() => loadSkillsPref());
+
+  // Budget for the model that will actually run: the picked one, or the
+  // recommended one before a selection exists.
+  const activeModel = useMemo(() => MODELS.find((m) => m.id === (modelId ?? recommended)) ?? null, [modelId, recommended]);
+  const inputBudget = useMemo(() => inputTokenBudget(activeModel?.contextLength ?? MAX_INPUT_TOKEN_BUDGET, settings.maxNewTokens), [activeModel, settings.maxNewTokens]);
 
   // Keep the latest values reachable from the (stable) async callbacks.
   useEffect(() => {
@@ -798,7 +835,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     if (!aliveRef.current) return;
 
     const history = messages;
-    const turns = fitHistory(generator.tokenizer, composedSystem, history, text);
+    const turns = fitHistory(generator.tokenizer, composedSystem, history, text, inputBudget);
     const isCold = !warmRef.current.has(modelId);
 
     // Append the user turn immediately (auto-titling on the first one), then
@@ -876,7 +913,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       stopperRef.current = null;
       armIdle();
     }
-  }, [input, busy, modelId, messages, composedSystem, settings, ensureLoaded, clearIdle, armIdle, updateConversation]);
+  }, [input, busy, modelId, messages, composedSystem, settings, inputBudget, ensureLoaded, clearIdle, armIdle, updateConversation]);
 
   const resetSettings = useCallback(() => setSettings(DEFAULT_SETTINGS), []);
 
@@ -946,6 +983,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       removeSkill,
       resetSkills,
       countTokens: measureTokens,
+      inputBudget,
       input,
       setInput,
       streaming,
@@ -988,6 +1026,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       removeSkill,
       resetSkills,
       measureTokens,
+      inputBudget,
       input,
       streaming,
       busy,

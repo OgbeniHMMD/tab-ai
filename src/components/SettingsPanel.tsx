@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { INPUT_TOKEN_BUDGET, useChatSession } from "../shared/chatSession";
+import { useChatSession } from "../shared/chatSession";
 import { newSkillId, type Skill } from "../shared/skills";
 import { Badge, Slider } from "../shared/ui";
 
@@ -34,7 +34,7 @@ function TokenMeter({ used, budget }: { used: number; budget: number }) {
       ) : tone === "warn" ? (
         <p className="mono mt-1.5 text-[10px] leading-4 text-amber-600 dark:text-amber-400">Using more than half the budget on instructions leaves less room for chat history.</p>
       ) : (
-        <p className="mono mt-1.5 text-[10px] leading-4 text-[var(--text-faint)]">Counted with the active model's tokenizer once it's loaded.</p>
+        <p className="mono mt-1.5 text-[10px] leading-4 text-[var(--text-faint)]">Derived from the active model's context window minus room for the reply.</p>
       )}
     </div>
   );
@@ -149,7 +149,8 @@ function SkillEditor({ initial, onSave, onCancel }: { initial: Skill | null; onS
  * routing the user away.
  */
 export function SettingsPanel() {
-  const { system, setSystem, skills, activeSkillIds, composedSystem, toggleSkill, upsertSkill, removeSkill, resetSkills, countTokens, settings, setSettings, resetSettings } = useChatSession();
+  const { system, setSystem, skills, activeSkillIds, composedSystem, toggleSkill, upsertSkill, removeSkill, resetSkills, countTokens, settings, setSettings, resetSettings, inputBudget } =
+    useChatSession();
 
   // `null` = editor closed; a Skill = editing that one; "new" sentinel = creating.
   const [editing, setEditing] = useState<Skill | null | "new">(null);
@@ -176,7 +177,7 @@ export function SettingsPanel() {
             className="mono w-full resize-y rounded-[12px] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-[12px] leading-5 text-[var(--text)] placeholder:text-[var(--text-faint)] focus:border-[var(--text)] focus:outline-none"
           />
           <div className="mt-4">
-            <TokenMeter used={systemTokens} budget={INPUT_TOKEN_BUDGET} />
+            <TokenMeter used={systemTokens} budget={inputBudget} />
           </div>
         </div>
       </section>
