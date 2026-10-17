@@ -15,6 +15,8 @@ export interface AdapterInfo {
 
 export interface WebCapabilities {
   webgpu: boolean;
+  /** Whether the WebGPU adapter exposes the `shader-f16` feature. */
+  f16: boolean;
   adapter: AdapterInfo | null;
   /** navigator.hardwareConcurrency — often capped by the browser. */
   threads: number | null;
@@ -30,6 +32,7 @@ export const CHAT_DESKTOP_MODEL = "onnx-community/Qwen2.5-0.5B-Instruct";
 
 export async function probeCapabilities(): Promise<WebCapabilities> {
   let webgpu = false;
+  let f16 = false;
   let adapter: AdapterInfo | null = null;
 
   try {
@@ -39,6 +42,7 @@ export async function probeCapabilities(): Promise<WebCapabilities> {
       const gpuAdapter = await gpu.requestAdapter();
       if (gpuAdapter) {
         webgpu = true;
+        f16 = gpuAdapter.features?.has?.("shader-f16") ?? false;
         adapter = (gpuAdapter.info as AdapterInfo | undefined) ?? null;
       }
     }
@@ -53,6 +57,7 @@ export async function probeCapabilities(): Promise<WebCapabilities> {
 
   return {
     webgpu,
+    f16,
     adapter,
     threads: nav.hardwareConcurrency ?? null,
     memoryGB: nav.deviceMemory ?? null,

@@ -15,11 +15,17 @@ import { createConversation, deleteConversationRecord, deriveTitle, loadConversa
 export interface ChatModel {
   id: string;
   label: string;
-  /** Real download size for the WebGPU dtype (`q4f16`). */
+  /** Real download size for the WebGPU dtype declared below. */
   size: string;
   /** Real download size for the WASM dtype (`q4`). */
   wasmSize: string;
   kind: "base" | "instruct";
+  /**
+   * dtype to request on WebGPU. `q4` is the safe default; `q4f16` halves the
+   * weights and is required for ~1B+ models that would otherwise exceed WebGPU
+   * buffer limits, but it needs the `shader-f16` feature.
+   */
+  webgpuDtype: "q4" | "q4f16";
   /**
    * Whether this model can plausibly run on the WASM backend at all. WASM is
    * capped at a 4 GB heap shared with the model, KV cache and activations, so
@@ -29,13 +35,6 @@ export interface ChatModel {
   note: string;
 }
 
-/**
- * dtype used on WebGPU. `q4` keeps the embedding matrix in fp32 (the single
- * largest initializer), which exceeds WebGPU buffer limits for ~1B+ models and
- * crashes onnxruntime with `Aborted()`. `q4f16` halves those weights and is the
- * dtype onnxruntime-web's WebGPU backend is tuned for.
- */
-export const WEBGPU_DTYPE = "q4f16";
 /** dtype used on WASM — fp16 (`q4f16`) is not supported there. */
 export const WASM_DTYPE = "q4";
 
@@ -48,36 +47,40 @@ export const MODELS: ChatModel[] = [
   {
     id: "Xenova/distilgpt2",
     label: "DistilGPT-2",
-    size: "~164 MB (q4f16)",
+    size: "~329 MB (q4)",
     wasmSize: "~329 MB (q4)",
     kind: "base",
+    webgpuDtype: "q4",
     wasmCapable: true,
     note: "Raw LM — continues text. Smallest & fastest.",
   },
   {
     id: "onnx-community/SmolLM2-135M-Instruct-ONNX",
     label: "SmolLM2 135M",
-    size: "~117 MB (q4f16)",
+    size: "~181 MB (q4)",
     wasmSize: "~181 MB (q4)",
     kind: "instruct",
+    webgpuDtype: "q4",
     wasmCapable: true,
     note: "Follows instructions. Good on low-end devices.",
   },
   {
     id: "onnx-community/SmolLM2-360M-Instruct-ONNX",
     label: "SmolLM2 360M",
-    size: "~272 MB (q4f16)",
+    size: "~386 MB (q4)",
     wasmSize: "~386 MB (q4)",
     kind: "instruct",
+    webgpuDtype: "q4",
     wasmCapable: true,
     note: "A step up from 135M — still light enough for WASM.",
   },
   {
     id: "onnx-community/Qwen2.5-0.5B-Instruct",
     label: "Qwen2.5 0.5B",
-    size: "~483 MB (q4f16)",
+    size: "~786 MB (q4)",
     wasmSize: "~786 MB (q4)",
     kind: "instruct",
+    webgpuDtype: "q4",
     wasmCapable: true,
     note: "Better reasoning. Best with WebGPU.",
   },
@@ -87,6 +90,7 @@ export const MODELS: ChatModel[] = [
     size: "~1.2 GB (q4f16)",
     wasmSize: "~1.8 GB (q4)",
     kind: "instruct",
+    webgpuDtype: "q4f16",
     wasmCapable: false,
     note: "Noticeably smarter. Requires WebGPU.",
   },
@@ -99,14 +103,28 @@ export function modelSize(model: ChatModel, webgpu: boolean): string {
 
 /**
  * onnxruntime reports allocation and graph failures as a bare
- * `Aborted(). Build with -sASSERTIONS for more info.` — give it a meaning.
+ * `Aborted(). Build with -sASSERTIONS for more info.` or even a lone numeric
+ * code — give them a meaning.
  */
 export function describeLoadError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
+  const message = (err instanceof Error ? err.message : String(err ?? "Unknown error")).trim();
   if (/^Aborted\(\)/.test(message)) {
-    return "onnxruntime aborted — the model could not be loaded into memory. Try a smaller model, close other tabs, and make sure hardware acceleration/WebGPU is enabled.";
+    return "onnxruntime aborted — the model ran out of memory while building the session. Reload the tab before trying again; if it repeats, choose a smaller model.";
+  }
+  if (/^-?\d+$/.test(message)) {
+    return `onnxruntime crashed while building the session (code ${message}). Reload the tab before trying again; if it repeats, choose a different model.`;
   }
   return message;
+}
+
+/**
+ * ORT reports fatal WebGPU failures as `Aborted()` or a bare numeric code.
+ * Once that happens the runtime stays poisoned for the lifetime of the page, so
+ * a WASM retry can only fail too — or crash the tab.
+ */
+function isOrtAbort(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err ?? "")).trim();
+  return /^Aborted\(\)/.test(message) || /^-?\d+$/.test(message) || /out of memory|\bOOM\b/i.test(message);
 }
 
 export type TextGenerator = ((input: string, options?: unknown) => Promise<unknown>) & {
@@ -542,6 +560,18 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     const meta = MODELS.find((m) => m.id === activeModel);
     const canFallBackToWasm = meta?.wasmCapable ?? true;
 
+    // `q4f16` weights need WebGPU's `shader-f16` feature. Attempting them
+    // without it aborts onnxruntime and poisons the page, so refuse up front.
+    if (meta?.webgpuDtype === "q4f16" && !activeCaps.f16) {
+      const message = "Qwen2.5 1.5B is not supported on this device — WebGPU shader-f16 is unavailable. Pick a smaller model.";
+      setReady(false);
+      setError(message);
+      setDownload(null);
+      setLoading(false);
+      setStatus("Failed to load: " + message);
+      return Promise.resolve(null);
+    }
+
     const token = ++loadTokenRef.current;
     const cancelled = () => token !== loadTokenRef.current;
 
@@ -573,11 +603,11 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    // WebGPU first, with the fp16-quantized weights. WASM is only worth trying
-    // for models that actually fit in its heap — retrying a 1.5B model there
-    // just masks the real WebGPU error with a bare `Aborted()`.
+    // WebGPU first, using the dtype this model declares. WASM is only worth
+    // trying for models that actually fit in its heap — retrying a 1.5B model
+    // there just masks the real WebGPU error with a bare `Aborted()`.
     const attempts: Array<{ device: "webgpu" | "wasm"; dtype: string }> = [];
-    if (activeCaps.webgpu) attempts.push({ device: "webgpu", dtype: WEBGPU_DTYPE });
+    if (activeCaps.webgpu) attempts.push({ device: "webgpu", dtype: meta?.webgpuDtype ?? "q4" });
     if (canFallBackToWasm) attempts.push({ device: "wasm", dtype: WASM_DTYPE });
 
     const promise = (async (): Promise<TextGenerator | null> => {
@@ -598,6 +628,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           } catch (err) {
             failures.push({ device: attempt.device, error: err });
             if (cancelled()) return null;
+            // After an ORT abort the runtime stays poisoned until reload, so
+            // falling back to WASM would only produce another (or worse) crash.
+            if (isOrtAbort(err)) break;
             if (i < attempts.length - 1) setStatus("WebGPU failed — retrying on WASM…");
           }
         }

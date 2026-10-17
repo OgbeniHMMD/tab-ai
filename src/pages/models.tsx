@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { MODELS, loadedKey, modelSize, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
+import { MODELS, WASM_DTYPE, loadedKey, modelSize, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
 import type { WebCapabilities } from "../shared/capabilities";
 import { probeModelCache, readPref } from "../shared/storage";
 import { Badge, DownloadCard, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
@@ -23,11 +23,11 @@ async function detectCached(model: ChatModel, webgpu: boolean, loadedInSession: 
   if (loadedInSession) return true;
   // Look for the exact dtype files this backend would download. q4 and q4f16
   // are separate blobs, so a previous q4 download can't stand in for q4f16.
-  const files: string[] = [];
-  if (webgpu) files.push("_q4f16.onnx");
-  if (model.wasmCapable) files.push("_q4.onnx");
-  if (files.length === 0) return false;
-  const probed = await probeModelCache(model.id, files);
+  const files = new Set<string>();
+  if (webgpu) files.add(`_${model.webgpuDtype}.onnx`);
+  if (model.wasmCapable) files.add(`_${WASM_DTYPE}.onnx`);
+  if (files.size === 0) return false;
+  const probed = await probeModelCache(model.id, [...files]);
   if (probed !== null) return probed;
   return readPref<boolean>(loadedKey(model.id)) === true;
 }
@@ -147,6 +147,7 @@ export default function ModelsPage() {
   const onCardClick = (model: ChatModel) => {
     if (busy) return;
     if (!model.wasmCapable && !webgpu) return; // needs a GPU backend
+    if (model.webgpuDtype === "q4f16" && caps != null && !caps.f16) return; // needs shader-f16
     if (model.id === modelId && ready) {
       navigate("/chat");
       return;
@@ -187,7 +188,14 @@ export default function ModelsPage() {
               const current = model.id === modelId;
               const cached = isCached(model.id);
               const highlighted = armed || current;
-              const unavailable = !model.wasmCapable && !webgpu;
+              const needsWebgpu = !model.wasmCapable && !webgpu;
+              const needsF16 = model.webgpuDtype === "q4f16" && caps != null && !caps.f16;
+              const unavailable = needsWebgpu || needsF16;
+              const unavailableReason = needsWebgpu
+                ? "This model needs WebGPU, which this browser does not expose."
+                : needsF16
+                  ? "This model needs WebGPU shader-f16 support, which this device does not provide."
+                  : undefined;
               const size = modelSize(model, webgpu);
               return (
                 <div
@@ -201,7 +209,7 @@ export default function ModelsPage() {
                     onClick={() => onCardClick(model)}
                     disabled={busy || unavailable}
                     aria-expanded={armed}
-                    title={unavailable ? "This model can only run on WebGPU, which this browser does not expose." : undefined}
+                    title={unavailableReason}
                     className={`flex flex-col text-left transition ${busy || unavailable ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
                   >
                     <div className="flex w-full items-center justify-between gap-2">
@@ -210,7 +218,7 @@ export default function ModelsPage() {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       {isRecommended ? <Badge tone="good">recommended</Badge> : null}
-                      {unavailable ? <Badge tone="warn">needs WebGPU</Badge> : null}
+                      {unavailable ? <Badge tone="warn">not supported on this device</Badge> : null}
                       {current && ready ? <Badge tone="invert">active</Badge> : null}
                       {current && !ready && phase === "loading" ? <Badge tone="warn">loading…</Badge> : null}
                       {current && phase === "error" ? <Badge tone="danger">failed</Badge> : null}
