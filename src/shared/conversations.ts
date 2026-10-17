@@ -25,6 +25,15 @@ export interface Conversation {
 
 export const DEFAULT_TITLE = "New Conversation";
 
+/**
+ * An untouched chat: no turns, still on the default title, and no custom system
+ * prompt. These are dropped rather than listed/persisted, so repeatedly pressing
+ * "New Chat" can't pile up blank entries in the sidebar.
+ */
+export function isEmptyConversation(conv: Conversation): boolean {
+  return conv.messages.length === 0 && conv.title === DEFAULT_TITLE && !conv.system.trim();
+}
+
 /** Title shown when a conversation has no user turns yet. */
 export function newConversationId(): string {
   return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -69,7 +78,8 @@ export function conversationToText(conv: Conversation): string {
   const lines: string[] = [`# ${conv.title}`, ""];
   if (conv.system.trim()) lines.push(`> System: ${conv.system.trim()}`, "");
   for (const m of conv.messages) {
-    lines.push(`**${m.role === "user" ? "You" : "Assistant"}:**`, m.content, "");
+    const author = m.role === "user" ? "You" : m.model ? `Assistant (${m.model})` : "Assistant";
+    lines.push(`**${author}:**`, m.content, "");
   }
   return lines.join("\n").trimEnd() + "\n";
 }
@@ -136,13 +146,18 @@ export async function loadConversations(): Promise<Conversation[]> {
   });
 }
 
-/** Write-through the whole list (small N; the sidebar keeps it in memory anyway). */
+/**
+ * Write-through the whole list (small N; the sidebar keeps it in memory anyway).
+ * The store is cleared first so records removed from the list — deleted chats and
+ * pruned empty ones — don't linger and reappear after a reload.
+ */
 export async function saveConversations(convs: Conversation[]): Promise<void> {
   const db = await openDb();
   if (!db) return;
   try {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
+    store.clear();
     for (const conv of convs) store.put(conv);
   } catch {
     /* quota / private mode — chats just won't survive a reload */

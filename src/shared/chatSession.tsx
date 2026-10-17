@@ -6,7 +6,7 @@ import { useCapabilities, recommendModel, type WebCapabilities } from "./capabil
 import { acquirePipeline, type AcquireHandle, type DownloadProgress } from "./modelLoader";
 import { readPref, writePref } from "./storage";
 import { BUILTIN_SKILLS, composeSystem, loadSkillsPref, saveSkillsPref, type Skill, type SkillsPref } from "./skills";
-import { createConversation, deleteConversationRecord, deriveTitle, loadConversations, saveConversations, DEFAULT_TITLE, type Conversation } from "./conversations";
+import { createConversation, deleteConversationRecord, deriveTitle, isEmptyConversation, loadConversations, saveConversations, DEFAULT_TITLE, type Conversation } from "./conversations";
 
 /* -------------------------------------------------------------------------- */
 /*  Model catalog                                                             */
@@ -169,6 +169,8 @@ export type Role = "system" | "user" | "assistant";
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** Label of the model that produced this turn (assistant messages only). */
+  model?: string;
 }
 
 /** Stable empty array so `messages` keeps a consistent identity when no chat exists. */
@@ -410,6 +412,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   const idleTimerRef = useRef<number | null>(null);
   /** The active conversation id, reachable from stable async callbacks. */
   const activeIdRef = useRef<string | null>(null);
+  /** Latest conversation list, reachable from stable callbacks. */
+  const conversationsRef = useRef<Conversation[]>([]);
 
   const [modelId, setModelId] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -456,6 +460,12 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     activeIdRef.current = activeId;
   }, [activeId]);
 
+  // Same for the list — `newChat`/`selectModel` need to decide whether the
+  // current chat is still blank without pulling state into their identities.
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
   /* --------------------------- conversation store -------------------------- */
 
   // Hydrate from IndexedDB once on mount, seeding a first conversation when
@@ -466,9 +476,12 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const stored = await loadConversations();
       if (cancelled || !aliveRef.current) return;
-      if (stored.length > 0) {
-        setConversations(stored);
-        setActiveId(stored[0].id);
+      // Drop untouched chats left behind by older sessions; the save effect
+      // clears them from IndexedDB on the next pass.
+      const kept = stored.filter((c) => !isEmptyConversation(c));
+      if (kept.length > 0) {
+        setConversations(kept);
+        setActiveId(kept[0].id);
       } else {
         const first = createConversation();
         setConversations([first]);
@@ -493,10 +506,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
   }, [hydrated, conversations, activeId]);
 
   // Debounced write-through: coalesces a burst of edits (typing a system prompt)
-  // into a single IndexedDB transaction.
+  // into a single IndexedDB transaction. Empty chats are never persisted.
   useEffect(() => {
     if (!hydrated) return;
-    const handle = window.setTimeout(() => void saveConversations(conversations), 300);
+    const handle = window.setTimeout(() => void saveConversations(conversations.filter((c) => !isEmptyConversation(c))), 300);
     return () => window.clearTimeout(handle);
   }, [conversations, hydrated]);
 
@@ -739,6 +752,21 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
   /* -------------------------------- controls ------------------------------- */
 
+  /** Start a blank chat unless the active one is already blank (and prune any strays). */
+  const beginChat = useCallback(() => {
+    setStreaming("");
+    setInput("");
+    const current = conversationsRef.current.find((c) => c.id === activeIdRef.current);
+    if (current && isEmptyConversation(current)) {
+      // Already on a blank chat — keep it and drop any other untouched ones.
+      setConversations((prev) => prev.filter((c) => c.id === current.id || !isEmptyConversation(c)));
+      return;
+    }
+    const conv = createConversation();
+    setConversations((prev) => [conv, ...prev.filter((c) => !isEmptyConversation(c))]);
+    setActiveId(conv.id);
+  }, []);
+
   const selectModel = useCallback(
     (id: string) => {
       if (busyRef.current) return; // never swap the pipeline mid-generation
@@ -749,10 +777,11 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
       setModelId(id);
-      setStreaming("");
-      setInput("");
+      // A new model starts a fresh transcript, so replies from different models
+      // never get tangled in one conversation.
+      beginChat();
     },
-    [modelId, ready],
+    [beginChat, modelId, ready],
   );
 
   const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
@@ -766,12 +795,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
   const newChat = useCallback(() => {
     if (busyRef.current) return; // don't strand an in-flight generation
-    const conv = createConversation();
-    setConversations((prev) => [conv, ...prev]);
-    setActiveId(conv.id);
-    setStreaming("");
-    setInput("");
-  }, []);
+    beginChat();
+  }, [beginChat]);
 
   const selectConversation = useCallback((id: string) => {
     if (busyRef.current) return;
@@ -804,7 +829,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     if (busyRef.current) return; // don't delete out from under a live generation
     void deleteConversationRecord(id);
     setConversations((prev) => {
-      const next = prev.filter((c) => c.id !== id);
+      const next = prev.filter((c) => c.id !== id && !isEmptyConversation(c));
       return next.length > 0 ? next : [createConversation()];
     });
     // If the open chat was removed, drop the selection; the repair effect picks
@@ -862,6 +887,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     let tokenCount = 0;
     let acc = "";
     let failure: string | null = null;
+    // Stamp each reply with the model that produced it, so transcripts that span
+    // model switches stay attributable.
+    const modelLabel = MODELS.find((m) => m.id === modelId)?.label ?? modelId;
 
     try {
       const streamer = new TextStreamer(generator.tokenizer as never, {
@@ -905,7 +933,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     } finally {
       if (aliveRef.current) {
         const content = failure ? (acc ? `${acc}\n\n[error: ${failure}]` : `Error: ${failure}`) : acc;
-        if (content.trim()) updateConversation(convId, (c) => ({ ...c, messages: [...c.messages, { role: "assistant", content }], updatedAt: Date.now() }));
+        if (content.trim()) updateConversation(convId, (c) => ({ ...c, messages: [...c.messages, { role: "assistant", content, model: modelLabel }], updatedAt: Date.now() }));
         setStreaming("");
         setLiveTps(null);
         setBusy(false);

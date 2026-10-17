@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 
 import { MODELS, modelSize, useChatSession, type Role } from "../shared/chatSession";
-import { conversationToText, formatTimestamp, type Conversation } from "../shared/conversations";
+import { conversationToText, formatTimestamp, isEmptyConversation, type Conversation } from "../shared/conversations";
 import { COMMANDS, PROMPTS } from "../shared/prompts";
 import { Badge, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
 import { SettingsPanel } from "../components/SettingsPanel";
@@ -86,7 +86,7 @@ function downloadText(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
-function Bubble({ role, content, streaming = false }: { role: Role; content: string; streaming?: boolean }) {
+function Bubble({ role, content, streaming = false, model }: { role: Role; content: string; streaming?: boolean; model?: string }) {
   if (role === "system") {
     return (
       <div className="flex flex-col items-start gap-1">
@@ -99,7 +99,7 @@ function Bubble({ role, content, streaming = false }: { role: Role; content: str
   }
   const isUser = role === "user";
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
       <div
         className={`max-w-[85%] whitespace-pre-wrap rounded-[16px] px-3.5 py-2.5 text-[13px] leading-relaxed ${
           isUser ? "bg-[var(--text)] text-[var(--bg)]" : "border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
@@ -108,6 +108,7 @@ function Bubble({ role, content, streaming = false }: { role: Role; content: str
         {content}
         {streaming ? <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-text-bottom" /> : null}
       </div>
+      {!isUser && (model || streaming) ? <span className="mono mt-1 pl-1 text-[10px] tracking-wide text-[var(--text-faint)]">{model ?? "Generating…"}</span> : null}
     </div>
   );
 }
@@ -190,6 +191,7 @@ export default function ChatPage() {
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -197,6 +199,9 @@ export default function ChatPage() {
   // `null` = closed; otherwise which field the edit dialog should focus.
   const [editor, setEditor] = useState<null | "title" | "system">(null);
   const [selected, setSelected] = useState(0);
+  // The palette is derived from the composer text, so dismissal is tracked
+  // separately: any edit re-opens it, an explicit dismiss hides it.
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
 
   const loading = useDismissibleLoader(phase === "loading");
 
@@ -235,13 +240,32 @@ export default function ChatPage() {
   // The `/` prompt library and `;` command palette are *derived* from the
   // composer text, so there's no separate open/close state to keep in sync.
   const palette = useMemo(() => {
+    if (paletteDismissed) return null;
     if (input.includes("\n")) return null;
     if (input.startsWith("/")) return { kind: "prompt" as const, query: input.slice(1).toLowerCase() };
     if (input.startsWith(";")) return { kind: "command" as const, query: input.slice(1).toLowerCase() };
     return null;
+  }, [input, paletteDismissed]);
+
+  // Editing the text re-opens the palette after a dismissal.
+  useEffect(() => {
+    setPaletteDismissed(false);
   }, [input]);
 
+  // Clicking anywhere outside the palette or composer dismisses it.
+  useEffect(() => {
+    if (!palette) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (paletteRef.current?.contains(target) || inputRef.current?.contains(target)) return;
+      setPaletteDismissed(true);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [palette]);
+
   const applyPrompt = (text: string) => {
+    setPaletteDismissed(false);
     setInput(text);
     const el = inputRef.current;
     if (el) {
@@ -296,27 +320,30 @@ export default function ChatPage() {
   /* ------------------------------ handlers --------------------------------- */
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (palette && paletteItems.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSelected((s) => (s + 1) % paletteItems.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSelected((s) => (s - 1 + paletteItems.length) % paletteItems.length);
-        return;
+    if (palette) {
+      if (paletteItems.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setSelected((s) => (s + 1) % paletteItems.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setSelected((s) => (s - 1 + paletteItems.length) % paletteItems.length);
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          const native = event.nativeEvent;
+          if (native.isComposing || native.keyCode === 229) return;
+          event.preventDefault();
+          paletteItems[Math.min(selected, paletteItems.length - 1)].onPick();
+          return;
+        }
       }
       if (event.key === "Escape") {
         event.preventDefault();
         setInput("");
-        return;
-      }
-      if (event.key === "Enter" && !event.shiftKey) {
-        const native = event.nativeEvent;
-        if (native.isComposing || native.keyCode === 229) return;
-        event.preventDefault();
-        paletteItems[Math.min(selected, paletteItems.length - 1)].onPick();
+        setPaletteDismissed(true);
         return;
       }
     }
@@ -352,6 +379,9 @@ export default function ChatPage() {
   const pillStatus: StatusKind = phase === "error" ? "error" : phase === "ready" ? "ready" : phase === "loading" ? "downloading" : "idle";
   const pillLabel = phase === "error" ? "Failed" : phase === "ready" ? "Ready" : phase === "loading" ? "Loading" : "Idle";
   const canCompose = phase === "ready" && !busy;
+  // Blank chats live in state (one is always needed as the composer's target)
+  // but are deliberately left out of the sidebar.
+  const listedConversations = conversations.filter((c) => !isEmptyConversation(c));
 
   return (
     <div className="flex h-[calc(100vh_-_112px_-_var(--safe-area-inset-top))] min-h-[520px] w-full flex-col items-center px-3 py-4 md:px-6 md:py-6">
@@ -399,7 +429,7 @@ export default function ChatPage() {
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
-            {conversations.map((c) => (
+            {listedConversations.map((c) => (
               <ConversationRow
                 key={c.id}
                 conv={c}
@@ -411,7 +441,8 @@ export default function ChatPage() {
                 onDelete={() => deleteConversation(c.id)}
               />
             ))}
-            {!hydrated && conversations.length === 0 ? <p className="mono px-1 text-[11px] text-[var(--text-faint)]">Loading conversations…</p> : null}
+            {!hydrated && listedConversations.length === 0 ? <p className="mono px-1 text-[11px] text-[var(--text-faint)]">Loading conversations…</p> : null}
+            {hydrated && listedConversations.length === 0 ? <p className="mono px-1 text-[11px] text-[var(--text-faint)]">Chats appear here after your first message.</p> : null}
           </div>
 
           <div className="border-t border-[var(--border)] px-5 py-4">
@@ -545,9 +576,9 @@ export default function ChatPage() {
               ) : null}
 
               {messages.map((m, i) => (
-                <Bubble key={i} role={m.role} content={m.content} />
+                <Bubble key={i} role={m.role} content={m.content} model={m.model} />
               ))}
-              {busy ? <Bubble role="assistant" content={streaming} streaming /> : null}
+              {busy ? <Bubble role="assistant" content={streaming} model={model.label} streaming /> : null}
               <div ref={endRef} />
             </div>
           </section>
@@ -556,8 +587,21 @@ export default function ChatPage() {
           <section className="shrink-0 border-t border-[var(--border)] px-4 py-3.5 md:px-6 md:py-4">
             <div className="mx-auto max-w-[760px]">
               {palette && paletteItems.length > 0 ? (
-                <div className="mb-2 max-h-[260px] overflow-y-auto rounded-[14px] border border-[var(--border)] bg-[var(--bg-soft)] p-1.5 shadow-lg">
-                  <div className="mono px-2.5 py-1.5 text-[10px] uppercase tracking-widest text-[var(--text-faint)]">{palette.kind === "prompt" ? "Prompts" : "Commands"}</div>
+                <div ref={paletteRef} className="mb-2 max-h-[260px] overflow-y-auto rounded-[14px] border border-[var(--border)] bg-[var(--bg-soft)] p-1.5 shadow-lg">
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                    <span className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)]">{palette.kind === "prompt" ? "Prompts" : "Commands"}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPaletteDismissed(true)}
+                      aria-label="Dismiss prompts"
+                      title="Dismiss"
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-faint)] transition hover:bg-[var(--surface)] hover:text-[var(--text)]"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  </div>
                   {paletteItems.map((item, i) => (
                     <button
                       key={item.key}
@@ -599,8 +643,7 @@ export default function ChatPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setInput(";");
-                    inputRef.current?.focus();
+                    applyPrompt(";");
                   }}
                   disabled={!canCompose}
                   className="mono rounded-[9px] border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--text-faint)] transition hover:text-[var(--text)] disabled:opacity-40"
