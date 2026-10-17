@@ -50,14 +50,17 @@ export async function listOwnedCaches(): Promise<string[]> {
  * authoritative: transformers.js writes every fetched weight file into Cache
  * Storage keyed by its `huggingface.co/<model>/resolve/<rev>/…` URL, so a hit
  * means the bytes really are on disk — and it stays correct even after the user
- * runs "Clear model cache" (which does not touch `localStorage`). A hit also
- * requires an `.onnx` file, so a cache that only holds `tokenizer.json` won't
- * falsely read as "cached".
+ * runs "Clear model cache" (which does not touch `localStorage`).
+ *
+ * `files` narrows the hit to specific weight filenames (e.g. `model_q4f16.onnx`),
+ * which matters because different backends download different dtype variants.
+ * A hit also requires an `.onnx` file, so a cache that only holds
+ * `tokenizer.json` won't falsely read as "cached".
  *
  * Returns `null` when the Cache API is unavailable (e.g. some private-mode
  * setups), letting callers fall back to the persisted "loaded once" flag.
  */
-export async function probeModelCache(modelId: string): Promise<boolean | null> {
+export async function probeModelCache(modelId: string, files?: string[]): Promise<boolean | null> {
   if (typeof caches === "undefined" || !caches.keys) return null;
   try {
     const names = await caches.keys();
@@ -66,7 +69,8 @@ export async function probeModelCache(modelId: string): Promise<boolean | null> 
       const requests = await cache.keys();
       for (const request of requests) {
         const url = request.url;
-        if (url.includes(`/${modelId}/`) && url.includes(".onnx")) return true;
+        if (!url.includes(`/${modelId}/`) || !url.includes(".onnx")) continue;
+        if (!files || files.some((file) => url.includes(file))) return true;
       }
     }
     return false;

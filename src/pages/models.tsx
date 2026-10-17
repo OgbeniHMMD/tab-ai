@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { MODELS, loadedKey, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
+import { MODELS, loadedKey, modelSize, rateKey, useChatSession, type ChatModel, type TokenRate } from "../shared/chatSession";
 import type { WebCapabilities } from "../shared/capabilities";
 import { probeModelCache, readPref } from "../shared/storage";
 import { Badge, DownloadCard, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
@@ -19,11 +19,17 @@ const CHAT_MODELS: ChatModel[] = MODELS.filter((m) => m.kind === "instruct");
  *  2. a Cache Storage probe (authoritative — see `probeModelCache`);
  *  3. the persisted "loaded once" flag, only when Cache Storage is unavailable.
  */
-async function detectCached(modelId: string, loadedInSession: boolean): Promise<boolean> {
+async function detectCached(model: ChatModel, webgpu: boolean, loadedInSession: boolean): Promise<boolean> {
   if (loadedInSession) return true;
-  const probed = await probeModelCache(modelId);
+  // Look for the exact dtype files this backend would download. q4 and q4f16
+  // are separate blobs, so a previous q4 download can't stand in for q4f16.
+  const files: string[] = [];
+  if (webgpu) files.push("_q4f16.onnx");
+  if (model.wasmCapable) files.push("_q4.onnx");
+  if (files.length === 0) return false;
+  const probed = await probeModelCache(model.id, files);
   if (probed !== null) return probed;
-  return readPref<boolean>(loadedKey(modelId)) === true;
+  return readPref<boolean>(loadedKey(model.id)) === true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -88,12 +94,13 @@ export default function ModelsPage() {
   const [cachedIds, setCachedIds] = useState<Set<string>>(() => new Set(CHAT_MODELS.filter((m) => readPref<boolean>(loadedKey(m.id))).map((m) => m.id)));
 
   const isCached = (id: string) => cachedIds.has(id) || isLoaded(id);
+  const webgpu = Boolean(caps?.webgpu);
 
   // Re-probe the caches whenever the active model or its readiness changes.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const results = await Promise.all(CHAT_MODELS.map(async (m) => [m.id, await detectCached(m.id, isLoaded(m.id))] as const));
+      const results = await Promise.all(CHAT_MODELS.map(async (m) => [m.id, await detectCached(m, Boolean(caps?.webgpu), isLoaded(m.id))] as const));
       if (!cancelled) setCachedIds(new Set(results.filter(([, cached]) => cached).map(([id]) => id)));
     })();
     return () => {
@@ -102,7 +109,7 @@ export default function ModelsPage() {
     // `isLoaded` is a stable-in-practice accessor over a ref; `modelId`/`ready`
     // are the real triggers for a re-probe.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId, ready, rateVersion]);
+  }, [modelId, ready, rateVersion, caps]);
 
   const currentModel = CHAT_MODELS.find((m) => m.id === modelId) ?? null;
   const showProgress = Boolean(currentModel) && !ready && phase === "loading";
@@ -139,6 +146,7 @@ export default function ModelsPage() {
    */
   const onCardClick = (model: ChatModel) => {
     if (busy) return;
+    if (!model.wasmCapable && !webgpu) return; // needs a GPU backend
     if (model.id === modelId && ready) {
       navigate("/chat");
       return;
@@ -179,6 +187,8 @@ export default function ModelsPage() {
               const current = model.id === modelId;
               const cached = isCached(model.id);
               const highlighted = armed || current;
+              const unavailable = !model.wasmCapable && !webgpu;
+              const size = modelSize(model, webgpu);
               return (
                 <div
                   key={model.id}
@@ -189,9 +199,10 @@ export default function ModelsPage() {
                   <button
                     type="button"
                     onClick={() => onCardClick(model)}
-                    disabled={busy}
+                    disabled={busy || unavailable}
                     aria-expanded={armed}
-                    className={`flex flex-col text-left transition ${busy ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+                    title={unavailable ? "This model can only run on WebGPU, which this browser does not expose." : undefined}
+                    className={`flex flex-col text-left transition ${busy || unavailable ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
                   >
                     <div className="flex w-full items-center justify-between gap-2">
                       <span className="text-[14px] font-[550] tracking-[-0.01em]">{model.label}</span>
@@ -199,19 +210,20 @@ export default function ModelsPage() {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       {isRecommended ? <Badge tone="good">recommended</Badge> : null}
+                      {unavailable ? <Badge tone="warn">needs WebGPU</Badge> : null}
                       {current && ready ? <Badge tone="invert">active</Badge> : null}
                       {current && !ready && phase === "loading" ? <Badge tone="warn">loading…</Badge> : null}
                       {current && phase === "error" ? <Badge tone="danger">failed</Badge> : null}
-                      {cached ? <Badge tone="good">cached — load instantly</Badge> : null}
+                      {cached && !unavailable ? <Badge tone="good">cached — load instantly</Badge> : null}
                     </div>
                     <span className="mono mt-2 text-[11px] leading-4 text-[var(--text-muted)]">
-                      {model.size} · {model.note}
+                      {size} · {model.note}
                     </span>
                   </button>
 
                   {armed ? (
                     <div className="mt-3 border-t border-[var(--border)] pt-3">
-                      <p className="mono text-[10px] leading-5 text-[var(--text-faint)]">Downloads {model.size} the first time, then cached after first time.</p>
+                      <p className="mono text-[10px] leading-5 text-[var(--text-faint)]">Downloads {size} the first time, then cached after first time.</p>
                       <button
                         type="button"
                         onClick={() => startLoad(model.id)}
@@ -234,7 +246,7 @@ export default function ModelsPage() {
             downloading ? (
               <DownloadCard
                 modelLabel={currentModel!.label}
-                sizeLabel={currentModel!.size}
+                sizeLabel={modelSize(currentModel!, webgpu)}
                 progress={download!}
                 footer={
                   <span className="mono flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]">
@@ -283,7 +295,14 @@ export default function ModelsPage() {
       {/* Popup for the post-download session build (weights are cached; this is
           the ORT session warming up). The download itself keeps its inline
           DownloadCard above. */}
-      <LoadingDialog open={building.open} status={status} progress={null} modelLabel={currentModel?.label} sizeLabel={currentModel?.size} onClose={building.dismiss} />
+      <LoadingDialog
+        open={building.open}
+        status={status}
+        progress={null}
+        modelLabel={currentModel?.label}
+        sizeLabel={currentModel ? modelSize(currentModel, webgpu) : undefined}
+        onClose={building.dismiss}
+      />
     </div>
   );
 }

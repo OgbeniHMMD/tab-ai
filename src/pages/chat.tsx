@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 
-import { MODELS, useChatSession, type Role } from "../shared/chatSession";
+import { MODELS, modelSize, useChatSession, type Role } from "../shared/chatSession";
 import { conversationToText, formatTimestamp, type Conversation } from "../shared/conversations";
 import { COMMANDS, PROMPTS } from "../shared/prompts";
 import { Badge, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
@@ -159,6 +159,7 @@ interface PaletteItem {
 export default function ChatPage() {
   const navigate = useNavigate();
   const {
+    caps,
     modelId,
     ready,
     error,
@@ -684,7 +685,7 @@ export default function ChatPage() {
       </div>
 
       {/* Full-screen popup while the model downloads + builds. */}
-      <LoadingDialog open={loading.open} status={status} progress={download} modelLabel={model.label} sizeLabel={model.size} onClose={loading.dismiss} />
+      <LoadingDialog open={loading.open} status={status} progress={download} modelLabel={model.label} sizeLabel={modelSize(model, Boolean(caps?.webgpu))} onClose={loading.dismiss} />
     </div>
   );
 }

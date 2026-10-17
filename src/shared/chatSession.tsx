@@ -15,53 +15,99 @@ import { createConversation, deleteConversationRecord, deriveTitle, loadConversa
 export interface ChatModel {
   id: string;
   label: string;
+  /** Real download size for the WebGPU dtype (`q4f16`). */
   size: string;
+  /** Real download size for the WASM dtype (`q4`). */
+  wasmSize: string;
   kind: "base" | "instruct";
+  /**
+   * Whether this model can plausibly run on the WASM backend at all. WASM is
+   * capped at a 4 GB heap shared with the model, KV cache and activations, so
+   * models much above ~1 GB abort with a bare `Aborted()` instead of loading.
+   */
+  wasmCapable: boolean;
   note: string;
 }
 
+/**
+ * dtype used on WebGPU. `q4` keeps the embedding matrix in fp32 (the single
+ * largest initializer), which exceeds WebGPU buffer limits for ~1B+ models and
+ * crashes onnxruntime with `Aborted()`. `q4f16` halves those weights and is the
+ * dtype onnxruntime-web's WebGPU backend is tuned for.
+ */
+export const WEBGPU_DTYPE = "q4f16";
+/** dtype used on WASM — fp16 (`q4f16`) is not supported there. */
+export const WASM_DTYPE = "q4";
+
 /*
- * `size` is the real `q4` download size, measured from the Hugging Face CDN blob
- * (`content-length`) for each model's `dtype: "q4"` files — not the parameter
+ * Sizes are real download sizes measured from the Hugging Face CDN blob
+ * (`content-length`) for each model's `q4f16` / `q4` files — not the parameter
  * count, and not the repo's total footprint.
  */
 export const MODELS: ChatModel[] = [
   {
     id: "Xenova/distilgpt2",
     label: "DistilGPT-2",
-    size: "~40 MB",
+    size: "~164 MB (q4f16)",
+    wasmSize: "~329 MB (q4)",
     kind: "base",
+    wasmCapable: true,
     note: "Raw LM — continues text. Smallest & fastest.",
   },
   {
     id: "onnx-community/SmolLM2-135M-Instruct-ONNX",
     label: "SmolLM2 135M",
-    size: "~172 MB (q4)",
+    size: "~117 MB (q4f16)",
+    wasmSize: "~181 MB (q4)",
     kind: "instruct",
+    wasmCapable: true,
     note: "Follows instructions. Good on low-end devices.",
   },
   {
     id: "onnx-community/SmolLM2-360M-Instruct-ONNX",
     label: "SmolLM2 360M",
-    size: "~368 MB (q4)",
+    size: "~272 MB (q4f16)",
+    wasmSize: "~386 MB (q4)",
     kind: "instruct",
+    wasmCapable: true,
     note: "A step up from 135M — still light enough for WASM.",
   },
   {
     id: "onnx-community/Qwen2.5-0.5B-Instruct",
     label: "Qwen2.5 0.5B",
-    size: "~749 MB (q4)",
+    size: "~483 MB (q4f16)",
+    wasmSize: "~786 MB (q4)",
     kind: "instruct",
+    wasmCapable: true,
     note: "Better reasoning. Best with WebGPU.",
   },
   {
     id: "onnx-community/Qwen2.5-1.5B-Instruct",
     label: "Qwen2.5 1.5B",
-    size: "~1.7 GB (q4)",
+    size: "~1.2 GB (q4f16)",
+    wasmSize: "~1.8 GB (q4)",
     kind: "instruct",
-    note: "Noticeably smarter. Needs WebGPU.",
+    wasmCapable: false,
+    note: "Noticeably smarter. Requires WebGPU.",
   },
 ];
+
+/** Download size to show for `model` on the current backend. */
+export function modelSize(model: ChatModel, webgpu: boolean): string {
+  return webgpu || !model.wasmCapable ? model.size : model.wasmSize;
+}
+
+/**
+ * onnxruntime reports allocation and graph failures as a bare
+ * `Aborted(). Build with -sASSERTIONS for more info.` — give it a meaning.
+ */
+export function describeLoadError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
+  if (/^Aborted\(\)/.test(message)) {
+    return "onnxruntime aborted — the model could not be loaded into memory. Try a smaller model, close other tabs, and make sure hardware acceleration/WebGPU is enabled.";
+  }
+  return message;
+}
 
 export type TextGenerator = ((input: string, options?: unknown) => Promise<unknown>) & {
   tokenizer: {
@@ -114,7 +160,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   // setting for tiny models; deterministic and less prone to confabulation.
   temperature: 0,
   topP: 0.95,
-  maxNewTokens: 128,
+  maxNewTokens: 256,
   repetitionPenalty: 1.15,
   noRepeatNgramSize: 3,
 };
@@ -493,6 +539,9 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
     const activeCaps = capsRef.current;
     if (!activeModel || !activeCaps) return Promise.resolve(null);
 
+    const meta = MODELS.find((m) => m.id === activeModel);
+    const canFallBackToWasm = meta?.wasmCapable ?? true;
+
     const token = ++loadTokenRef.current;
     const cancelled = () => token !== loadTokenRef.current;
 
@@ -508,10 +557,10 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
 
     // Acquire a handle for one device. On failure the handle is released so the
     // caller can fall back to another device.
-    const tryDevice = async (device: "webgpu" | "wasm"): Promise<TextGenerator> => {
+    const tryDevice = async (device: "webgpu" | "wasm", dtype: string): Promise<TextGenerator> => {
       const handle = acquirePipeline<TextGenerator>("text-generation", activeModel, {
         device,
-        dtype: "q4",
+        dtype,
         onProgress,
       });
       handleRef.current = handle;
@@ -524,22 +573,51 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // WebGPU first, with the fp16-quantized weights. WASM is only worth trying
+    // for models that actually fit in its heap — retrying a 1.5B model there
+    // just masks the real WebGPU error with a bare `Aborted()`.
+    const attempts: Array<{ device: "webgpu" | "wasm"; dtype: string }> = [];
+    if (activeCaps.webgpu) attempts.push({ device: "webgpu", dtype: WEBGPU_DTYPE });
+    if (canFallBackToWasm) attempts.push({ device: "wasm", dtype: WASM_DTYPE });
+
     const promise = (async (): Promise<TextGenerator | null> => {
       try {
-        let instance: TextGenerator | null = null;
-        if (activeCaps.webgpu) {
-          try {
-            instance = await tryDevice("webgpu");
-          } catch {
-            if (cancelled()) return null;
-            setStatus("WebGPU unavailable — using WASM…");
-            instance = await tryDevice("wasm");
-          }
-        } else {
-          instance = await tryDevice("wasm");
+        if (attempts.length === 0) {
+          throw new Error(`${meta?.label ?? "This model"} requires WebGPU, which this browser does not expose. Use Chrome/Edge 113+ with WebGPU enabled, or pick a smaller model.`);
         }
 
-        if (cancelled() || !instance || !aliveRef.current) return null;
+        const failures: Array<{ device: "webgpu" | "wasm"; error: unknown }> = [];
+        let instance: TextGenerator | null = null;
+
+        for (let i = 0; i < attempts.length; i++) {
+          const attempt = attempts[i];
+          setStatus(`Loading model on ${attempt.device === "webgpu" ? "WebGPU" : "WASM"}…`);
+          try {
+            instance = await tryDevice(attempt.device, attempt.dtype);
+            break;
+          } catch (err) {
+            failures.push({ device: attempt.device, error: err });
+            if (cancelled()) return null;
+            if (i < attempts.length - 1) setStatus("WebGPU failed — retrying on WASM…");
+          }
+        }
+
+        if (!instance) {
+          // De-duplicate identical messages so a model that aborts on both
+          // backends doesn't show the same sentence twice.
+          const seen = new Set<string>();
+          const details = failures
+            .map(({ device, error }) => `${device === "webgpu" ? "WebGPU" : "WASM"}: ${describeLoadError(error)}`)
+            .filter((line) => {
+              const body = line.slice(line.indexOf(": ") + 2);
+              if (seen.has(body)) return false;
+              seen.add(body);
+              return true;
+            });
+          throw new Error(details.join(" · "));
+        }
+
+        if (cancelled() || !aliveRef.current) return null;
         generatorRef.current = instance;
         loadedRef.current.add(activeModel);
         // Record the durable "loaded once" marker as a fallback for the models
@@ -552,7 +630,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         if (cancelled() || !aliveRef.current) return null;
         generatorRef.current = null;
-        const message = err instanceof Error ? err.message : "Unknown error";
+        const message = describeLoadError(err);
         setError(message);
         setStatus("Failed to load: " + message);
         return null;

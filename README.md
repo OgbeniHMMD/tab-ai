@@ -27,8 +27,8 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-First run downloads a model (~12 MB – ~1.7 GB depending on the chat model you pick).
-After that it is served from cache and works offline.
+First run downloads a model (~117 MB – ~1.2 GB depending on the chat model you
+pick). After that it is served from cache and works offline.
 
 ### Scripts
 
@@ -58,7 +58,9 @@ Everything is client-side:
   fallback when the Cache API is unavailable.
 - **`src/shared/chatSession.tsx`** — the app-wide chat provider (mounted in `Layout`
   so the loaded pipeline survives route changes). Owns the model lifecycle, the
-  conversation store, generation settings, and the skill/prompt library.
+  conversation store, generation settings, and the skill/prompt library. Models
+  load with `dtype: "q4f16"` on WebGPU and `dtype: "q4"` on WASM; large models
+  (e.g. Qwen2.5 1.5B) are WebGPU-only because they cannot fit in the WASM heap.
 - **`src/shared/conversations.ts`** — the multi-chat model + IndexedDB persistence.
   Conversations live in their own `tabai-chat` database, deliberately outside the
   `transformers|onnx` pattern that "Clear model cache" removes.
