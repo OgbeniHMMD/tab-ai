@@ -222,7 +222,7 @@ export default function ModelsPage() {
                       {current && ready ? <Badge tone="invert">active</Badge> : null}
                       {current && !ready && phase === "loading" ? <Badge tone="warn">loading…</Badge> : null}
                       {current && phase === "error" ? <Badge tone="danger">failed</Badge> : null}
-                      {cached && !unavailable ? <Badge tone="good">cached — load instantly</Badge> : null}
+                      {cached && !unavailable ? <Badge tone="good">cached</Badge> : null}
                     </div>
                     <span className="mono mt-2 text-[11px] leading-4 text-[var(--text-muted)]">
                       {size} · {model.note}

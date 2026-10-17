@@ -1,76 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
+import { ArrowUpTrayIcon, ArrowsPointingOutIcon, Bars3Icon, Cog6ToothIcon, PaperAirplaneIcon, PencilSquareIcon, PlusIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
 import { MODELS, modelSize, useChatSession, type Role } from "../shared/chatSession";
 import { conversationToText, formatTimestamp, isEmptyConversation, type Conversation } from "../shared/conversations";
 import { COMMANDS, PROMPTS } from "../shared/prompts";
 import { Badge, LoadingDialog, StatusPill, useDismissibleLoader, type StatusKind } from "../shared/ui";
 import { SettingsPanel } from "../components/SettingsPanel";
-
-/* -------------------------------------------------------------------------- */
-/*  Icons                                                                     */
-/* -------------------------------------------------------------------------- */
-
-const iconProps = {
-  width: 16,
-  height: 16,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.6,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-const PencilIcon = () => (
-  <svg {...iconProps}>
-    <path d="M12 20h9" />
-    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-  </svg>
-);
-const ExportIcon = () => (
-  <svg {...iconProps}>
-    <path d="M12 15V3" />
-    <path d="m7 8 5-5 5 5" />
-    <path d="M5 21h14" />
-  </svg>
-);
-const ExpandIcon = () => (
-  <svg {...iconProps}>
-    <path d="M4 9V4h5" />
-    <path d="M20 15v5h-5" />
-    <path d="M15 4h5v5" />
-    <path d="M9 20H4v-5" />
-  </svg>
-);
-const PlusIcon = () => (
-  <svg {...iconProps}>
-    <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-const MenuIcon = () => (
-  <svg {...iconProps}>
-    <path d="M3 6h18M3 12h18M3 18h18" />
-  </svg>
-);
-const TrashIcon = () => (
-  <svg {...iconProps} width={14} height={14}>
-    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
-  </svg>
-);
-const SendIcon = () => (
-  <svg {...iconProps}>
-    <path d="M22 2 11 13" />
-    <path d="M22 2 15 22l-4-9-9-4Z" />
-  </svg>
-);
-const GearIcon = () => (
-  <svg {...iconProps}>
-    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
 
 /* -------------------------------------------------------------------------- */
 /*  Small pieces                                                              */
@@ -139,7 +76,7 @@ function ConversationRow({ conv, active, onSelect, onDelete }: { conv: Conversat
         title="Delete conversation"
         className="absolute right-2 top-2.5 rounded-full p-1 text-[var(--text-faint)] transition hover:bg-[var(--bg-soft)] hover:text-red-600 dark:hover:text-red-400"
       >
-        <TrashIcon />
+        <TrashIcon className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
     </div>
   );
@@ -398,37 +335,10 @@ export default function ChatPage() {
           className={`${sidebarOpen ? "flex" : "hidden"} absolute inset-y-0 left-0 z-20 w-[290px] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-soft)] md:static md:z-auto md:flex`}
         >
           <div className="flex items-center gap-3 px-5 pb-4 pt-5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-[11px] bg-[var(--text)] text-[13px] font-semibold text-[var(--bg)]">T</div>
-            <div className="min-w-0">
-              <div className="truncate text-[15px] font-[600] tracking-[-0.02em]">Local Chat</div>
-              <div className="mono text-[10px] uppercase tracking-widest text-[var(--text-faint)]">On-device · Private</div>
-            </div>
+            <div className="truncate text-[15px] font-[600] tracking-[-0.02em]">Chats</div>
           </div>
 
-          <div className="flex gap-2 px-5">
-            <button
-              type="button"
-              onClick={() => {
-                applyPrompt("/");
-                setSidebarOpen(false);
-              }}
-              className="mono flex-1 rounded-[11px] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[11px] tracking-wide text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
-            >
-              / Prompts
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSettingsOpen(true);
-                setSidebarOpen(false);
-              }}
-              className="mono flex-1 rounded-[11px] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-center text-[11px] tracking-wide text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
-            >
-              Settings
-            </button>
-          </div>
-
-          <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto px-5 pb-4">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4 border-t border-[var(--border)]">
             {listedConversations.map((c) => (
               <ConversationRow
                 key={c.id}
@@ -455,7 +365,7 @@ export default function ChatPage() {
               disabled={busy}
               className="mono flex w-full items-center justify-center gap-2 rounded-[12px] bg-[var(--text)] px-4 py-2.5 text-[12px] font-[500] tracking-wide text-[var(--bg)] transition hover:opacity-[0.9] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <PlusIcon /> New Chat
+              <PlusIcon className="h-4 w-4" aria-hidden="true" /> New Chat
             </button>
           </div>
         </aside>
@@ -473,10 +383,23 @@ export default function ChatPage() {
                 aria-label="Open conversations"
                 className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:text-[var(--text)] md:hidden"
               >
-                <MenuIcon />
+                <Bars3Icon className="h-4 w-4" aria-hidden="true" />
               </button>
               <div className="min-w-0">
-                <h1 className="truncate text-[18px] font-[600] tracking-[-0.02em] md:text-[20px]">{conversation?.title ?? "New Conversation"}</h1>
+                <div className="flex gap-2 items-center">
+                  <button
+                    type="button"
+                    onClick={() => setEditor("system")}
+                    disabled={!conversation}
+                    aria-label="Edit conversation"
+                    title="Edit conversation"
+                    className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-40"
+                  >
+                    <PencilSquareIcon className="h-4 w-4" aria-hidden="true" />
+                  </button>
+
+                  <h1 className="truncate text-[18px] font-[600] tracking-[-0.02em] md:text-[20px]">{conversation?.title ?? "New Conversation"}</h1>
+                </div>
                 <div className="mt-0.5 flex items-center gap-2">
                   <span className="mono text-[11px] text-[var(--text-faint)]">
                     {messages.length} message{messages.length === 1 ? "" : "s"}
@@ -490,23 +413,13 @@ export default function ChatPage() {
             <div className="flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setEditor("system")}
-                disabled={!conversation}
-                aria-label="Edit conversation"
-                title="Edit conversation"
-                className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-40"
-              >
-                <PencilIcon />
-              </button>
-              <button
-                type="button"
                 onClick={onExport}
                 disabled={!conversation || messages.length === 0}
                 aria-label="Export conversation"
                 title="Export as Markdown"
                 className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-40"
               >
-                <ExportIcon />
+                <ArrowUpTrayIcon className="h-4 w-4" aria-hidden="true" />
               </button>
               <Link
                 to="/models"
@@ -522,7 +435,7 @@ export default function ChatPage() {
                 title="Settings"
                 className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
               >
-                <GearIcon />
+                <Cog6ToothIcon className="h-4 w-4" aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -531,7 +444,7 @@ export default function ChatPage() {
                 title="Fullscreen"
                 className="rounded-[10px] border border-[var(--border)] p-2 text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)]"
               >
-                <ExpandIcon />
+                <ArrowsPointingOutIcon className="h-4 w-4" aria-hidden="true" />
               </button>
             </div>
           </header>
@@ -565,7 +478,7 @@ export default function ChatPage() {
                   disabled={!conversation}
                   className="mono inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3.5 py-1.5 text-[11px] tracking-wide text-[var(--text-muted)] transition hover:border-[var(--border-strong)] hover:text-[var(--text)] disabled:opacity-40"
                 >
-                  <PencilIcon /> Edit Conversation
+                  <PencilSquareIcon className="h-4 w-4" aria-hidden="true" /> Edit Conversation
                 </button>
               </div>
 
@@ -597,9 +510,7 @@ export default function ChatPage() {
                       title="Dismiss"
                       className="flex h-5 w-5 items-center justify-center rounded-full text-[var(--text-faint)] transition hover:bg-[var(--surface)] hover:text-[var(--text)]"
                     >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                        <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-                      </svg>
+                      <XMarkIcon className="h-3 w-3" aria-hidden="true" />
                     </button>
                   </div>
                   {paletteItems.map((item, i) => (
@@ -625,20 +536,11 @@ export default function ChatPage() {
               <div className="flex items-center gap-1.5 pb-2">
                 <button
                   type="button"
-                  onClick={() => setEditor("system")}
-                  disabled={!conversation}
-                  title="Edit conversation"
-                  className="rounded-[9px] border border-[var(--border)] p-1.5 text-[var(--text-faint)] transition hover:text-[var(--text)] disabled:opacity-40"
-                >
-                  <PencilIcon />
-                </button>
-                <button
-                  type="button"
                   onClick={() => applyPrompt("/")}
                   disabled={!canCompose}
                   className="mono rounded-[9px] border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--text-faint)] transition hover:text-[var(--text)] disabled:opacity-40"
                 >
-                  /
+                  / Prompts
                 </button>
                 <button
                   type="button"
@@ -648,12 +550,9 @@ export default function ChatPage() {
                   disabled={!canCompose}
                   className="mono rounded-[9px] border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--text-faint)] transition hover:text-[var(--text)] disabled:opacity-40"
                 >
-                  ;
+                  ; Commands
                 </button>
-                <span className="mono ml-1 inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] px-3 py-1.5 text-[10.5px] text-[var(--text-muted)]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                  {model.label}
-                </span>
+
                 {activeSkillIds.length > 0 ? (
                   <Badge tone="info">
                     {activeSkillIds.length} skill{activeSkillIds.length > 1 ? "s" : ""}
@@ -682,7 +581,7 @@ export default function ChatPage() {
                     disabled={!canCompose || !input.trim()}
                     className="inline-flex items-center gap-2 rounded-[12px] bg-[var(--text)] px-5 py-3 text-[13px] font-[500] text-[var(--bg)] transition hover:opacity-[0.9] disabled:cursor-not-allowed disabled:opacity-30"
                   >
-                    <SendIcon /> Send
+                    <PaperAirplaneIcon className="h-4 w-4" aria-hidden="true" /> Send
                   </button>
                 )}
               </div>

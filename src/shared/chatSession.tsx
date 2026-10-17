@@ -776,12 +776,12 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
         setRetryNonce((n) => n + 1);
         return;
       }
+      // Keep the open conversation: each assistant turn records the model that
+      // produced it, so a transcript can span model switches without hiding or
+      // splitting the user's existing chats.
       setModelId(id);
-      // A new model starts a fresh transcript, so replies from different models
-      // never get tangled in one conversation.
-      beginChat();
     },
-    [beginChat, modelId, ready],
+    [modelId, ready],
   );
 
   const retry = useCallback(() => setRetryNonce((n) => n + 1), []);
